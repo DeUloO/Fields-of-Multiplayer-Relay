@@ -13,6 +13,7 @@ sealed class ClientSession
     public readonly NetworkStream Stream;
     public volatile string?       PlayerId;
 
+    public readonly Channel<string> Outbox = Channel.CreateBounded<string>(
         new BoundedChannelOptions(2) { FullMode = BoundedChannelFullMode.DropOldest });
 
     public readonly SemaphoreSlim WriteLock = new(1, 1);
@@ -66,7 +67,7 @@ sealed class StatusReporter
             await File.WriteAllTextAsync(tmp, obj.ToJsonString(), ct);
             File.Move(tmp, _path, overwrite: true);
         }
-        catch { /* transient IO — the next heartbeat will retry */ }
+        catch {}
     }
 
     public void TryDelete() { try { File.Delete(_path); } catch { } }
@@ -120,7 +121,6 @@ sealed class SnapshotReceiver
             }
             case "snap_done":
             {
-                // Signal the game to adopt the just-delivered world.
                 try
                 {
                     await File.WriteAllTextAsync(Path.Combine(_mpDir, "mp_apply_world"), "", ct);
@@ -223,6 +223,7 @@ static class Program
                 connectHost = args[i];
         }
 
+        string mpDir =
             explicitDir
             ?? (instanceId != null ? InstanceDir(instanceId) : ResolveMpDir());
 
@@ -241,7 +242,6 @@ static class Program
         Console.WriteLine("└──────────────────────────────────────────────────────────┘");
         Console.WriteLine();
 
-        // One status reporter for the whole run; the game reads mp_status.json.
         var reporter   = new StatusReporter(mpDir);
         var statusTask = Task.Run(() => reporter.RunAsync(cts.Token), cts.Token);
 
@@ -473,7 +473,8 @@ static class Program
             }
             catch (FileNotFoundException)      { return null; }
             catch (DirectoryNotFoundException) { return null; }
-            catch (IOException)                { await Task.Delay(15, ct); } // locked — retry
+            catch (IOException)                { await Task.Delay(15, ct); }
+            catch (UnauthorizedAccessException){ await Task.Delay(15, ct); }
         }
         return null;
     }
@@ -494,6 +495,7 @@ static class Program
             catch (FileNotFoundException)      { return null; }
             catch (DirectoryNotFoundException) { return null; }
             catch (IOException)                { await Task.Delay(15, ct); }
+            catch (UnauthorizedAccessException){ await Task.Delay(15, ct); }
         }
         return null;
     }
@@ -506,12 +508,15 @@ static class Program
         try
         {
             await File.WriteAllTextAsync(tmp, json, ct);
-            for (int attempt = 0; ; attempt++)
+            for (int attempt = 0; attempt < 6; attempt++)
             {
                 try { File.Move(tmp, remotePath, overwrite: true); return; }
-                catch (IOException) when (attempt < 5) { await Task.Delay(15, ct); }
+                catch (IOException)                 when (attempt < 5) { await Task.Delay(15, ct); }
+                catch (UnauthorizedAccessException) when (attempt < 5) { await Task.Delay(15, ct); }
             }
+            try { await File.WriteAllTextAsync(remotePath, json, ct); } catch { }
         }
+        catch (Exception ex) { Console.WriteLine($"[RELAY] write remote.json: {ex.Message}"); }
         finally { writeLock.Release(); }
     }
 
