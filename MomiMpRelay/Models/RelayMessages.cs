@@ -9,13 +9,13 @@ static class RelayProtocol
     public const string ConnectionKey = "momi-mp";
 }
 
-enum RelayPacketKind : byte
+public enum RelayPacketKind : byte
 {
     Json = 1,
     SnapshotChunk = 2,
 }
 
-readonly record struct RelayPacket(RelayPacketKind Kind, byte[] Data);
+public readonly record struct RelayPacket(RelayPacketKind Kind, byte[] Data);
 
 [JsonConverter(typeof(RelayControlJsonConverter))]
 sealed record RelayControl
@@ -74,7 +74,7 @@ sealed class RelayControlJsonConverter : JsonConverter<RelayControl>
     }
 }
 
-interface IRelayMessage
+public interface IRelayMessage
 {
     string Identifier { get; }
     JsonObject ToJson();

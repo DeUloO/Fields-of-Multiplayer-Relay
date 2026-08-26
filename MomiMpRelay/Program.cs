@@ -3,241 +3,18 @@ using System.Buffers.Binary;
 using System.Net;
 using LiteNetLib;
 using LiteNetLib.Utils;
+using MomiMpRelay.Configuration;
+using MomiMpRelay.FileSystem;
 using MomiMpRelay.Models;
+using MomiMpRelay.Networking;
+using MomiMpRelay.Snapshots;
+using MomiMpRelay.Status;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 
 namespace MomiMpRelay;
-
-sealed class ClientSession
-{
-    public readonly NetPeer Peer;
-    public volatile string?       PlayerId;
-
-    public readonly Channel<IRelayMessage> Outbox = Channel.CreateBounded<IRelayMessage>(
-        new BoundedChannelOptions(2) { FullMode = BoundedChannelFullMode.DropOldest });
-
-    public readonly Channel<RelayPacket> Inbox = Channel.CreateUnbounded<RelayPacket>();
-
-    public readonly SemaphoreSlim WriteLock = new(1, 1);
-
-    public ClientSession(NetPeer peer) { Peer = peer; }
-
-    public void Push(IRelayMessage message) => Outbox.Writer.TryWrite(message);
-}
-
-sealed class RelayListener : INetEventListener
-{
-    readonly Action<NetPeer, string> _connected;
-    readonly Action<NetPeer, RelayPacket> _received;
-    readonly Action<NetPeer> _disconnected;
-
-    public RelayListener(
-        Action<NetPeer, string> connected,
-        Action<NetPeer, RelayPacket> received,
-        Action<NetPeer> disconnected)
-    {
-        _connected = connected;
-        _received = received;
-        _disconnected = disconnected;
-    }
-
-    public void OnPeerConnected(NetPeer peer) => _connected(peer, peer.Address.ToString());
-    public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo) => _disconnected(peer);
-    public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber,
-        DeliveryMethod deliveryMethod)
-    {
-        try
-        {
-            var data = reader.GetRemainingBytes();
-            if (data.Length > 0)
-                _received(peer, new RelayPacket((RelayPacketKind)data[0], data[1..]));
-        }
-        finally { reader.Recycle(); }
-    }
-    public void OnNetworkError(IPEndPoint endPoint, System.Net.Sockets.SocketError socketError) { }
-    public void OnNetworkReceiveUnconnected(IPEndPoint remoteEndPoint, NetPacketReader reader,
-        UnconnectedMessageType messageType) => reader.Recycle();
-    public void OnNetworkLatencyUpdate(NetPeer peer, int latency) { }
-    public void OnConnectionRequest(ConnectionRequest request) =>
-        request.AcceptIfKey(RelayProtocol.ConnectionKey);
-}
-
-sealed class StatusReporter
-{
-    readonly string _path;
-    long   _hb;
-    string _state  = "idle";
-    string _role   = "off";
-    int    _peers;
-    string? _detail;
-
-    public StatusReporter(string mpDir) => _path = Path.Combine(mpDir, "mp_status.json");
-
-    public void Set(string state, string role, int peers, string? detail = null)
-    {
-        _state = state; _role = role; _peers = peers; _detail = detail;
-    }
-    public void SetState(string state, string? detail = null) { _state = state; _detail = detail; }
-    public void SetPeers(int peers) => _peers = peers;
-
-    public async Task RunAsync(CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested)
-        {
-            await WriteOnceAsync(ct);
-            try { await Task.Delay(500, ct); } catch { break; }
-        }
-    }
-
-    public async Task WriteOnceAsync(CancellationToken ct)
-    {
-        var hb  = Interlocked.Increment(ref _hb);
-        var obj = new JsonObject
-        {
-            ["hb"]     = hb,
-            ["state"]  = _state,
-            ["role"]   = _role,
-            ["peers"]  = _peers,
-            ["detail"] = _detail,
-        };
-        try
-        {
-            var tmp = _path + ".tmp";
-            await File.WriteAllTextAsync(tmp, obj.ToJsonString(), ct);
-            File.Move(tmp, _path, overwrite: true);
-        }
-        catch {}
-    }
-
-    public void TryDelete() { try { File.Delete(_path); } catch { } }
-}
-
-
-sealed class SnapshotReceiver
-{
-    readonly string _mpDir;
-    readonly Dictionary<string, FileStream> _open = new();
-    readonly Dictionary<string, int> _nextChunk = new();
-    readonly Dictionary<string, int> _expectedChunks = new();
-    readonly Dictionary<string, int> _expectedBytes = new();
-    readonly Dictionary<string, int> _receivedBytes = new();
-
-    public SnapshotReceiver(string mpDir) { _mpDir = mpDir; }
-
-    public async Task HandleAsync(IMpControlMessage message, CancellationToken ct)
-    {
-        switch (message)
-        {
-            case SnapshotBegin begin:
-            {
-                var name = begin.Name;
-                if (!TryGetFileId(name, out _)
-                    || begin.Chunks < 0 || begin.Bytes < 0
-                    || (begin.Bytes == 0 && begin.Chunks != 0)
-                    || (begin.Bytes > 0 && begin.Chunks == 0))
-                {
-                    Console.WriteLine($"[CLIENT] Invalid snapshot metadata for {name}; ignoring.");
-                    break;
-                }
-                CloseOne(name);
-                var part = Path.Combine(_mpDir, name + ".part");
-                _open[name] = new FileStream(part, FileMode.Create, FileAccess.Write,
-                    FileShare.None, 1 << 16, useAsync: true);
-                _nextChunk[name] = 0;
-                _expectedChunks[name] = begin.Chunks;
-                _expectedBytes[name] = begin.Bytes;
-                _receivedBytes[name] = 0;
-                Console.WriteLine($"[CLIENT] Receiving {name} ({begin.Bytes} bytes)…");
-                break;
-            }
-            case SnapshotEnd end:
-            {
-                var name = end.Name;
-                if (!_open.ContainsKey(name) ||
-                    !_nextChunk.TryGetValue(name, out var received) ||
-                    !_expectedChunks.TryGetValue(name, out var expected) ||
-                    received != expected ||
-                    !_expectedBytes.TryGetValue(name, out var expectedBytes) ||
-                    !_receivedBytes.TryGetValue(name, out var receivedBytes) ||
-                    receivedBytes != expectedBytes)
-                {
-                    Console.WriteLine($"[CLIENT] Incomplete snapshot {name}; ignoring.");
-                    CloseOne(name);
-                    break;
-                }
-                CloseOne(name);
-                var part  = Path.Combine(_mpDir, name + ".part");
-                var final = Path.Combine(_mpDir, name);
-                try { if (File.Exists(part)) File.Move(part, final, overwrite: true); }
-                catch (Exception ex) { Console.WriteLine($"[CLIENT] snap_end {name}: {ex.Message}"); }
-                break;
-            }
-            case SnapshotDone:
-            {
-                try
-                {
-                    await File.WriteAllTextAsync(Path.Combine(_mpDir, "mp_apply_world"), "", ct);
-                    Console.WriteLine("[CLIENT] World snapshot complete → apply requested.");
-                }
-                catch (Exception ex) { Console.WriteLine($"[CLIENT] snap_done: {ex.Message}"); }
-                break;
-            }
-        }
-    }
-
-    public async Task HandleChunkAsync(byte fileId, int sequence, byte[] bytes,
-        CancellationToken ct)
-    {
-        var name = fileId switch
-        {
-            1 => "world_snapshot.json",
-            2 => "world_farm_terrain.bin",
-            _ => null,
-        };
-        if (name is null || !_open.TryGetValue(name, out var fs) ||
-            !_nextChunk.TryGetValue(name, out var expected) || sequence != expected ||
-            !_expectedBytes.TryGetValue(name, out var expectedBytes) ||
-            !_receivedBytes.TryGetValue(name, out var receivedBytes) ||
-            bytes.Length > expectedBytes - receivedBytes)
-        {
-            if (name is not null && _open.ContainsKey(name)) CloseOne(name);
-            return;
-        }
-
-        await fs.WriteAsync(bytes, ct);
-        _nextChunk[name] = expected + 1;
-        _receivedBytes[name] = receivedBytes + bytes.Length;
-    }
-
-    static bool TryGetFileId(string name, out byte fileId)
-    {
-        fileId = name switch
-        {
-            "world_snapshot.json" => (byte)1,
-            "world_farm_terrain.bin" => (byte)2,
-            _ => (byte)0,
-        };
-        return fileId != 0;
-    }
-
-    void CloseOne(string name)
-    {
-        if (_open.TryGetValue(name, out var fs))
-        {
-            try { fs.Dispose(); } catch { }
-            _open.Remove(name);
-            _nextChunk.Remove(name);
-            _expectedChunks.Remove(name);
-            _expectedBytes.Remove(name);
-            _receivedBytes.Remove(name);
-        }
-    }
-}
-
-
 static class Program
 {
     const int DefaultPort = 7777;
@@ -250,50 +27,6 @@ static class Program
     // How long the host waits for its game to produce a snapshot (write
     // mp_snap_ready) after being asked. The game only serializes when in-world.
     const int SnapshotTimeoutMs = 20_000;
-
-    static string FomRoot => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "FieldsOfMistria");
-
-    static string InstanceDir(string id)
-    {
-        var clean = new string(id.Where(c => char.IsLetterOrDigit(c) || c is '_' or '-').ToArray());
-        if (clean.Length == 0 || clean.Equals("main", StringComparison.OrdinalIgnoreCase))
-            return Path.Combine(FomRoot, "momi_mp");
-        return Path.Combine(FomRoot, "momi_mp_" + clean);
-    }
-
-    static string ResolveMpDir()
-    {
-        var direct     = Path.Combine(FomRoot, "momi_mp");
-        var candidates = new List<string> { direct };
-        try
-        {
-            foreach (var sub in Directory.GetDirectories(FomRoot))
-            {
-                var mm = Path.Combine(sub, "momi_mp");   // e.g. FieldsOfMistria/beta/momi_mp
-                if (Directory.Exists(mm)) { candidates.Add(mm); }
-            }
-        }
-        catch { }
-
-        string?  best     = null;
-        DateTime bestTime = DateTime.MinValue;
-        foreach (var c in candidates)
-        {
-            try
-            {
-                var ctrl = Path.Combine(c, "mp_control.json");
-                if (File.Exists(ctrl))
-                {
-                    var t = File.GetLastWriteTimeUtc(ctrl);
-                    if (t > bestTime) { bestTime = t; best = c; }
-                }
-            }
-            catch { }
-        }
-        return best ?? direct;
-    }
 
     static async Task<int> Main(string[] args)
     {
@@ -320,7 +53,7 @@ static class Program
 
         string mpDir =
             explicitDir
-            ?? (instanceId != null ? InstanceDir(instanceId) : ResolveMpDir());
+            ?? (instanceId != null ? RelayDirectories.InstanceDir(instanceId) : RelayDirectories.ResolveMpDir());
 
         Directory.CreateDirectory(mpDir);
 
@@ -395,7 +128,7 @@ static class Program
         Console.WriteLine("for running a 2nd game + relay on one machine. --dir overrides it entirely.");
         Console.WriteLine();
         Console.WriteLine($"Default port : {DefaultPort}");
-        Console.WriteLine($"Auto-detected dir : {ResolveMpDir()}");
+        Console.WriteLine($"Auto-detected dir : {RelayDirectories.ResolveMpDir()}");
     }
 
     static int Err(string msg) { Console.Error.WriteLine($"Error: {msg}"); PrintUsage(); return 1; }
@@ -490,35 +223,6 @@ static class Program
     }
 
 
-    static void Send(NetPeer peer, IRelayMessage message, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        var jsonBytes = Encoding.UTF8.GetBytes(message.ToJson().ToJsonString());
-        var packet = new byte[1 + jsonBytes.Length];
-        packet[0] = (byte)RelayPacketKind.Json;
-        jsonBytes.CopyTo(packet, 1);
-        peer.Send(packet, DeliveryMethod.ReliableOrdered);
-    }
-
-    static void SendSnapshotChunk(NetPeer peer, byte fileId, int sequence,
-        byte[] bytes, int offset, int count, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        var packet = new byte[1 + 1 + sizeof(int) + count];
-        packet[0] = (byte)RelayPacketKind.SnapshotChunk;
-        packet[1] = fileId;
-        BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(2), sequence);
-        bytes.AsSpan(offset, count).CopyTo(packet.AsSpan(2 + sizeof(int)));
-        peer.Send(packet, DeliveryMethod.ReliableOrdered);
-    }
-
-    static async Task SendLockedAsync(ClientSession session, IRelayMessage message, CancellationToken ct)
-    {
-        await session.WriteLock.WaitAsync(ct);
-        try { Send(session.Peer, message, ct); }
-        finally { session.WriteLock.Release(); }
-    }
-
     static string BuildRemoteJson(ConcurrentDictionary<string, JsonObject> states, string? excludePid)
     {
         var arr = new JsonArray();
@@ -526,67 +230,6 @@ static class Program
             if (pid != excludePid)
                 arr.Add(state.DeepClone());
         return new JsonObject { ["players"] = arr }.ToJsonString();
-    }
-
-    static async Task<string?> ReadTextSharedAsync(string path, CancellationToken ct)
-    {
-        for (int attempt = 0; attempt < 6; attempt++)
-        {
-            try
-            {
-                using var fs = new FileStream(
-                    path, FileMode.Open, FileAccess.Read,
-                    FileShare.ReadWrite | FileShare.Delete);
-                using var sr = new StreamReader(fs, Encoding.UTF8);
-                return await sr.ReadToEndAsync(ct);
-            }
-            catch (FileNotFoundException)      { return null; }
-            catch (DirectoryNotFoundException) { return null; }
-            catch (IOException)                { await Task.Delay(15, ct); }
-            catch (UnauthorizedAccessException){ await Task.Delay(15, ct); }
-        }
-        return null;
-    }
-
-    static async Task<byte[]?> ReadBytesSharedAsync(string path, CancellationToken ct)
-    {
-        for (int attempt = 0; attempt < 6; attempt++)
-        {
-            try
-            {
-                using var fs = new FileStream(
-                    path, FileMode.Open, FileAccess.Read,
-                    FileShare.ReadWrite | FileShare.Delete);
-                using var ms = new MemoryStream();
-                await fs.CopyToAsync(ms, ct);
-                return ms.ToArray();
-            }
-            catch (FileNotFoundException)      { return null; }
-            catch (DirectoryNotFoundException) { return null; }
-            catch (IOException)                { await Task.Delay(15, ct); }
-            catch (UnauthorizedAccessException){ await Task.Delay(15, ct); }
-        }
-        return null;
-    }
-
-    static async Task WriteRemoteAsync(
-        string remotePath, string json, SemaphoreSlim writeLock, CancellationToken ct)
-    {
-        var tmp = remotePath + ".tmp";
-        await writeLock.WaitAsync(ct);
-        try
-        {
-            await File.WriteAllTextAsync(tmp, json, ct);
-            for (int attempt = 0; attempt < 6; attempt++)
-            {
-                try { File.Move(tmp, remotePath, overwrite: true); return; }
-                catch (IOException)                 when (attempt < 5) { await Task.Delay(15, ct); }
-                catch (UnauthorizedAccessException) when (attempt < 5) { await Task.Delay(15, ct); }
-            }
-            try { await File.WriteAllTextAsync(remotePath, json, ct); } catch { }
-        }
-        catch (Exception ex) { Console.WriteLine($"[RELAY] write remote.json: {ex.Message}"); }
-        finally { writeLock.Release(); }
     }
 
 
@@ -664,7 +307,7 @@ static class Program
             {
                 try
                 {
-                    var raw = await ReadTextSharedAsync(outPath, ct);
+                    var raw = await RelayFileStore.ReadTextSharedAsync(outPath, ct);
                     if (raw != null && raw != lastRaw)
                     {
                         lastRaw = raw;
@@ -673,7 +316,7 @@ static class Program
                         {
                             myPid       = state.PlayerId;
                             states[state.PlayerId] = state.Payload;
-                            await WriteRemoteAsync(remotePath, BuildRemoteJson(states, state.PlayerId), writeLock, ct);
+                            await RelayFileStore.WriteRemoteAsync(remotePath, BuildRemoteJson(states, state.PlayerId), writeLock, ct);
                                 PushToAll();
                         }
                     }
@@ -767,7 +410,7 @@ static class Program
                 // Refresh host's own remote.json (sees this client's new state)
                 var hostPid = getHostPid();
                 if (hostPid != null)
-                    await WriteRemoteAsync(hostRemotePath, BuildRemoteJson(states, hostPid), writeLock, ct);
+                    await RelayFileStore.WriteRemoteAsync(hostRemotePath, BuildRemoteJson(states, hostPid), writeLock, ct);
 
                 // Push updated snapshot to every connected client
                 pushToAll();
@@ -809,8 +452,8 @@ static class Program
             }
             try { File.Delete(readyPath); } catch { }
 
-            jsonBytes = await ReadBytesSharedAsync(Path.Combine(mpDir, "world_snapshot.json"), ct);
-            binBytes  = await ReadBytesSharedAsync(Path.Combine(mpDir, "world_farm_terrain.bin"), ct);
+            jsonBytes = await RelayFileStore.ReadBytesSharedAsync(Path.Combine(mpDir, "world_snapshot.json"), ct);
+            binBytes  = await RelayFileStore.ReadBytesSharedAsync(Path.Combine(mpDir, "world_farm_terrain.bin"), ct);
         }
         finally { snapshotLock.Release(); }
 
@@ -825,7 +468,7 @@ static class Program
             await SendFileChunksAsync(session, "world_snapshot.json", jsonBytes, ct);
             if (binBytes is not null)
                 await SendFileChunksAsync(session, "world_farm_terrain.bin", binBytes, ct);
-            await SendLockedAsync(session, new SnapshotDone(), ct);
+            await RelayTransport.SendLockedAsync(session, new SnapshotDone(), ct);
             Console.WriteLine($"[HOST] snapshot sent to {session.PlayerId ?? "client"} " +
                               $"({jsonBytes.Length} + {(binBytes?.Length ?? 0)} bytes)");
         }
@@ -839,25 +482,16 @@ static class Program
         byte fileId = name == "world_snapshot.json" ? (byte)1 : (byte)2;
         int total = (bytes.Length + ChunkBytes - 1) / ChunkBytes;
 
-        await SendLockedAsync(session, new SnapshotBegin(name, total, bytes.Length), ct);
+        await RelayTransport.SendLockedAsync(session, new SnapshotBegin(name, total, bytes.Length), ct);
 
         for (int i = 0; i < total; i++)
         {
             int off = i * ChunkBytes;
             int count = Math.Min(ChunkBytes, bytes.Length - off);
-            await SendLockedSnapshotChunkAsync(session, fileId, i, bytes, off, count, ct);
+            await RelayTransport.SendLockedSnapshotChunkAsync(session, fileId, i, bytes, off, count, ct);
         }
 
-        await SendLockedAsync(session, new SnapshotEnd(name), ct);
-    }
-
-    static async Task SendLockedSnapshotChunkAsync(
-        ClientSession session, byte fileId, int sequence, byte[] bytes,
-        int offset, int count, CancellationToken ct)
-    {
-        await session.WriteLock.WaitAsync(ct);
-        try { SendSnapshotChunk(session.Peer, fileId, sequence, bytes, offset, count, ct); }
-        finally { session.WriteLock.Release(); }
+        await RelayTransport.SendLockedAsync(session, new SnapshotEnd(name), ct);
     }
 
     // Drains the per-session outbox and sends messages to the client. Uses the
@@ -867,7 +501,7 @@ static class Program
         try
         {
             await foreach (var msg in session.Outbox.Reader.ReadAllAsync(ct))
-                await SendLockedAsync(session, msg, ct);
+                await RelayTransport.SendLockedAsync(session, msg, ct);
         }
         catch { }
     }
@@ -924,7 +558,7 @@ static class Program
                 // network blip that reconnects mid-session won't wipe local play.
                     if (!requestedSnapshot)
                     {
-                        Send(peer, new SnapshotRequest(), linkCts.Token);
+                        RelayTransport.Send(peer, new SnapshotRequest(), linkCts.Token);
                         requestedSnapshot = true;
                         Console.WriteLine("[CLIENT] Requested world snapshot from host.");
                     }
@@ -971,14 +605,14 @@ static class Program
                 if (File.Exists(resyncPath))
                 {
                     try { File.Delete(resyncPath); } catch { }
-                    Send(peer, new SnapshotRequest(), ct);
+                    RelayTransport.Send(peer, new SnapshotRequest(), ct);
                     Console.WriteLine("[CLIENT] New day — re-requesting world snapshot.");
                 }
 
-                var raw = await ReadTextSharedAsync(outPath, ct);
+                var raw = await RelayFileStore.ReadTextSharedAsync(outPath, ct);
                 var state = raw is null ? null : PlayerState.Parse(raw);
                 if (state is not null)
-                    Send(peer, state, ct);
+                    RelayTransport.Send(peer, state, ct);
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex)               { Console.WriteLine($"[CLIENT] Send: {ex.Message}"); return; }
