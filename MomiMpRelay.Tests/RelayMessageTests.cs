@@ -64,6 +64,23 @@ public sealed class RelayMessageTests
     }
 
     [Fact]
+    public void MessageParserDispatchesEachSupportedMessageType()
+    {
+        Assert.IsType<SnapshotRequest>(RelayMessageParser.Parse("{\"mp_msg\":\"snap_req\"}"));
+        Assert.IsType<PlayerState>(RelayMessageParser.Parse("{\"player_id\":\"p1\"}"));
+        Assert.IsType<RelayStateUpdate>(RelayMessageParser.Parse("{\"players\":[]}"));
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"mp_msg\":\"unknown\"}")]
+    [InlineData("not json")]
+    public void MessageParserRejectsUnknownMessages(string json)
+    {
+        Assert.Null(RelayMessageParser.Parse(json));
+    }
+
+    [Fact]
     public void PlayerStateRequiresNonBlankPlayerId()
     {
         var state = PlayerState.Parse("{\"player_id\":\"p1\",\"x\":12}");

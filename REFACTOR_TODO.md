@@ -27,7 +27,7 @@ This is the persistent backlog for the remaining netcode and design work. The tr
   - Reject malformed packet payloads before they reach application code.
   - Add tests for truncated headers and invalid snapshot metadata.
 
-- [ ] Replace string-based JSON dispatch.
+- [x] Replace string-based JSON dispatch.
   - Remove `msg.Contains("\"mp_msg\"")` from the client receive path.
   - Parse each JSON packet once into a typed envelope or validated message.
   - Dispatch control messages, player state, and remote-state updates by type.

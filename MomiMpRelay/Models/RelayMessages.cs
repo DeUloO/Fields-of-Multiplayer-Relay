@@ -129,12 +129,15 @@ public sealed record PlayerState(string PlayerId, JsonObject Payload) : IRelayMe
         try
         {
             var payload = JsonNode.Parse(json)?.AsObject();
-            var playerId = payload?["player_id"]?.GetValue<string>();
-            return payload is null || string.IsNullOrWhiteSpace(playerId)
-                ? null
-                : new PlayerState(playerId, payload);
+            return payload is null ? null : Parse(payload);
         }
         catch { return null; }
+    }
+
+    public static PlayerState? Parse(JsonObject payload)
+    {
+        var playerId = payload["player_id"]?.GetValue<string>();
+        return string.IsNullOrWhiteSpace(playerId) ? null : new PlayerState(playerId, payload);
     }
 }
 
@@ -146,20 +149,43 @@ public sealed record RelayStateUpdate(JsonObject Payload) : IRelayMessage
 
 public static class RelayMessageParser
 {
+    public static IRelayMessage? Parse(string json)
+    {
+        try
+        {
+            var node = JsonNode.Parse(json)?.AsObject();
+            return node is null ? null : Parse(node);
+        }
+        catch { return null; }
+    }
+
+    public static IRelayMessage? Parse(JsonObject node)
+    {
+        if (node["mp_msg"] is not null)
+            return ParseControl(node);
+        if (node["player_id"] is not null)
+            return PlayerState.Parse(node);
+        if (node["players"] is not null)
+            return new RelayStateUpdate(node);
+        return null;
+    }
+
     public static IMpControlMessage? ParseControl(string json)
     {
         try
         {
             var node = JsonNode.Parse(json)?.AsObject();
-            return node?["mp_msg"]?.GetValue<string>() switch
-            {
-                "snap_req" => node.Deserialize<SnapshotRequest>(),
-                "snap_done" => node.Deserialize<SnapshotDone>(),
-                "snap_begin" => node.Deserialize<SnapshotBegin>(),
-                "snap_end" => node.Deserialize<SnapshotEnd>(),
-                _ => null,
-            };
+            return node is null ? null : ParseControl(node);
         }
         catch { return null; }
     }
+
+    static IMpControlMessage? ParseControl(JsonObject node) => node["mp_msg"]?.GetValue<string>() switch
+    {
+        "snap_req" => node.Deserialize<SnapshotRequest>(),
+        "snap_done" => node.Deserialize<SnapshotDone>(),
+        "snap_begin" => node.Deserialize<SnapshotBegin>(),
+        "snap_end" => node.Deserialize<SnapshotEnd>(),
+        _ => null,
+    };
 }

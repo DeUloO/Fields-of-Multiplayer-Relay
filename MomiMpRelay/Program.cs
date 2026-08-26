@@ -359,8 +359,10 @@ static class Program
             await foreach (var msg in session.Inbox.Reader.ReadAllAsync(ct))
             {
                 if (msg.Kind != RelayPacketKind.Json) continue;
+                var message = RelayMessageParser.Parse(Encoding.UTF8.GetString(msg.Data));
+                if (message is null) continue;
                 await HostClientMessageAsync(session, session.Peer.Address.ToString(),
-                    Encoding.UTF8.GetString(msg.Data), states, sessions, mpDir,
+                    message, states, sessions, mpDir,
                     hostRemotePath, writeLock, snapshotLock, getHostPid, pushToAll,
                     refreshPeers, ct);
             }
@@ -370,7 +372,7 @@ static class Program
 
     static async Task HostClientMessageAsync(
         ClientSession session, string addr,
-        string msg,
+        IRelayMessage message,
         ConcurrentDictionary<string, JsonObject> states,
         ConcurrentDictionary<ClientSession, byte> sessions,
         string mpDir,
@@ -384,8 +386,7 @@ static class Program
     {
         try
         {
-            var control = RelayMessageParser.ParseControl(msg);
-            if (control is not null)
+            if (message is IMpControlMessage control)
             {
                 if (control is SnapshotRequest)
                 {
@@ -395,8 +396,7 @@ static class Program
                 return;
             }
 
-            var state = PlayerState.Parse(msg);
-            if (state is null) return;
+            if (message is not PlayerState state) return;
 
                 if (session.PlayerId != state.PlayerId)
                 {
@@ -638,21 +638,15 @@ static class Program
                     continue;
                 }
                 if (packet.Kind != RelayPacketKind.Json) continue;
-                var msg = Encoding.UTF8.GetString(packet.Data);
-
-                // Cheap gate to only parse when it's actually a control message,
-                // so the remote.json path stays a plain file write.
-                if (msg.Contains("\"mp_msg\""))
+                var message = RelayMessageParser.Parse(Encoding.UTF8.GetString(packet.Data));
+                if (message is IMpControlMessage control)
                 {
-                    var control = RelayMessageParser.ParseControl(msg);
-                    if (control is not null)
-                    {
-                        await snap.HandleAsync(control, ct);
-                        continue;
-                    }
+                    await snap.HandleAsync(control, ct);
+                    continue;
                 }
 
-                await File.WriteAllTextAsync(remotePath, msg, ct);
+                if (message is RelayStateUpdate stateUpdate)
+                    await File.WriteAllTextAsync(remotePath, stateUpdate.ToJson().ToJsonString(), ct);
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex)               { Console.WriteLine($"[CLIENT] Receive: {ex.Message}"); return; }
