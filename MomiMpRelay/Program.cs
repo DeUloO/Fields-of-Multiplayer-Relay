@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
-using System.Net.Sockets;
+using LiteNetLib;
+using LiteNetLib.Utils;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
@@ -9,18 +10,50 @@ namespace MomiMpRelay;
 
 sealed class ClientSession
 {
-    public readonly TcpClient     Tcp;
-    public readonly NetworkStream Stream;
+    public readonly NetPeer Peer;
     public volatile string?       PlayerId;
 
     public readonly Channel<string> Outbox = Channel.CreateBounded<string>(
         new BoundedChannelOptions(2) { FullMode = BoundedChannelFullMode.DropOldest });
 
+    public readonly Channel<string> Inbox = Channel.CreateUnbounded<string>();
+
     public readonly SemaphoreSlim WriteLock = new(1, 1);
 
-    public ClientSession(TcpClient tcp) { Tcp = tcp; Stream = tcp.GetStream(); }
+    public ClientSession(NetPeer peer) { Peer = peer; }
 
     public void Push(string json) => Outbox.Writer.TryWrite(json);
+}
+
+sealed class RelayListener : INetEventListener
+{
+    readonly Action<NetPeer, string> _connected;
+    readonly Action<NetPeer, byte[]> _received;
+    readonly Action<NetPeer> _disconnected;
+
+    public RelayListener(
+        Action<NetPeer, string> connected,
+        Action<NetPeer, byte[]> received,
+        Action<NetPeer> disconnected)
+    {
+        _connected = connected;
+        _received = received;
+        _disconnected = disconnected;
+    }
+
+    public void OnPeerConnected(NetPeer peer) => _connected(peer, peer.Address.ToString());
+    public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo) => _disconnected(peer);
+    public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber,
+        DeliveryMethod deliveryMethod)
+    {
+        try { _received(peer, reader.GetRemainingBytes()); }
+        finally { reader.Recycle(); }
+    }
+    public void OnNetworkError(IPEndPoint endPoint, System.Net.Sockets.SocketError socketError) { }
+    public void OnNetworkReceiveUnconnected(IPEndPoint remoteEndPoint, NetPacketReader reader,
+        UnconnectedMessageType messageType) => reader.Recycle();
+    public void OnNetworkLatencyUpdate(NetPeer peer, int latency) { }
+    public void OnConnectionRequest(ConnectionRequest request) => request.AcceptIfKey("momi-mp");
 }
 
 sealed class StatusReporter
@@ -149,9 +182,9 @@ static class Program
     const int PollMs      = 50;    // poll out.json / control every 50 ms (~20 fps)
 
     // Base64 chars per snapshot chunk. Multiple of 4 so each chunk is a valid
-    // standalone base64 segment. ~1 MB text/chunk keeps every frame well under
-    // the 4 MB wire cap even after JSON envelope overhead.
-    const int ChunkChars  = 1_000_000;
+    // standalone base64 segment and leaves room below a normal UDP MTU for the
+    // JSON envelope and LiteNetLib headers.
+    const int ChunkChars  = 900;
 
     // How long the host waits for its game to produce a snapshot (write
     // mp_snap_ready) after being asked. The game only serializes when in-world.
@@ -407,42 +440,18 @@ static class Program
     }
 
 
-    static async Task SendAsync(NetworkStream stream, string json, CancellationToken ct)
+    static void Send(NetPeer peer, string json, CancellationToken ct)
     {
-        var body   = Encoding.UTF8.GetBytes(json);
-        var header = BitConverter.GetBytes(body.Length);
-        await stream.WriteAsync(header, ct);
-        await stream.WriteAsync(body,   ct);
+        ct.ThrowIfCancellationRequested();
+        peer.Send(Encoding.UTF8.GetBytes(json), DeliveryMethod.ReliableOrdered);
+        return;
     }
 
     static async Task SendLockedAsync(ClientSession session, string json, CancellationToken ct)
     {
         await session.WriteLock.WaitAsync(ct);
-        try { await SendAsync(session.Stream, json, ct); }
+        try { Send(session.Peer, json, ct); }
         finally { session.WriteLock.Release(); }
-    }
-
-    static async Task<string?> ReceiveAsync(NetworkStream stream, CancellationToken ct)
-    {
-        var hdr = new byte[4];
-        if (!await FillAsync(stream, hdr, ct)) return null;
-        int len = BitConverter.ToInt32(hdr);
-        if (len is <= 0 or > 4 * 1024 * 1024) return null;
-        var body = new byte[len];
-        if (!await FillAsync(stream, body, ct)) return null;
-        return Encoding.UTF8.GetString(body);
-    }
-
-    static async Task<bool> FillAsync(NetworkStream stream, byte[] buf, CancellationToken ct)
-    {
-        int pos = 0;
-        while (pos < buf.Length)
-        {
-            int n = await stream.ReadAsync(buf.AsMemory(pos), ct);
-            if (n == 0) return false;
-            pos += n;
-        }
-        return true;
     }
 
     static string BuildRemoteJson(ConcurrentDictionary<string, JsonObject> states, string? excludePid)
@@ -541,39 +550,51 @@ static class Program
                     s.Push(BuildRemoteJson(states, pid));
         }
 
-        var listener = new TcpListener(IPAddress.Any, port);
-        listener.Start();
+        RelayListener? netListener = null;
+        var net = new NetManager(netListener = new RelayListener(
+            (peer, addr) => //Connected
+            {
+                var session = new ClientSession(peer);
+                sessions.TryAdd(session, 0);
+                RefreshPeers();
+                Console.WriteLine($"[HOST] + {addr}");
+                _ = Task.Run(() => ClientWriteLoop(session, ct), ct);
+                _ = Task.Run(() => HostClientReadLoop(session, states, sessions, mpDir,
+                    remotePath, writeLock, snapshotLock, () => myPid, PushToAll,
+                    RefreshPeers, ct), ct);
+            },
+            (peer, bytes) => //Received
+            {
+                var session = sessions.Keys.FirstOrDefault(s => s.Peer == peer);
+                if (session is not null)
+                    session.Inbox.Writer.TryWrite(Encoding.UTF8.GetString(bytes));
+            },
+            peer => //Disconnected
+            {
+                var session = sessions.Keys.FirstOrDefault(s => s.Peer == peer);
+                if (session is null) return;
+                session.Inbox.Writer.TryComplete();
+                if (session.PlayerId is { } pid)
+                {
+                    states.TryRemove(pid, out _);
+                    Console.WriteLine($"[HOST] - {peer.Address} ({pid})");
+                }
+                sessions.TryRemove(session, out _);
+                session.Outbox.Writer.TryComplete();
+                RefreshPeers();
+            }));
+        net.Start(port);
         reporter.Set("listening", "host", 0);
         Console.WriteLine($"[HOST] Listening on :{port}");
         Console.WriteLine($"[HOST] Friends: set Join + your IP in their Multiplayer tab (port {port})");
 
         try
         {
-            // Accept clients in background
-            _ = Task.Run(async () =>
-            {
-                while (!ct.IsCancellationRequested)
-                {
-                    TcpClient client;
-                    try   { client = await listener.AcceptTcpClientAsync(ct); }
-                    catch { break; }
-                    client.NoDelay = true;
-                    var ep      = (IPEndPoint)client.Client.RemoteEndPoint!;
-                    var session = new ClientSession(client);
-                    sessions.TryAdd(session, 0);
-                    RefreshPeers();
-                    Console.WriteLine($"[HOST] + {ep.Address}");
-                    _ = Task.Run(() => HostClientReadLoop(session, ep.Address.ToString(),
-                        states, sessions, mpDir, remotePath, writeLock, snapshotLock,
-                        () => myPid, PushToAll, RefreshPeers, ct), ct);
-                    _ = Task.Run(() => ClientWriteLoop(session, ct), ct);
-                }
-            }, ct);
-
             // Poll own out.json
             string? lastRaw = null;
             while (!ct.IsCancellationRequested)
             {
+                net.PollEvents();
                 try
                 {
                     var raw = await ReadTextSharedAsync(outPath, ct);
@@ -603,8 +624,8 @@ static class Program
         catch (OperationCanceledException) { }
         finally
         {
-            listener.Stop();
-            foreach (var (s, _) in sessions) { try { s.Tcp.Dispose(); } catch { } }
+            net.Stop();
+            foreach (var (s, _) in sessions) s.Outbox.Writer.TryComplete();
             Console.WriteLine("[HOST] Stopped listening.");
         }
         return 0;
@@ -614,7 +635,7 @@ static class Program
     // immediately pushes the new snapshot to all other clients. Also handles
     // control messages (mp_msg) such as world-snapshot requests.
     static async Task HostClientReadLoop(
-        ClientSession session, string addr,
+        ClientSession session,
         ConcurrentDictionary<string, JsonObject> states,
         ConcurrentDictionary<ClientSession, byte> sessions,
         string mpDir,
@@ -628,13 +649,32 @@ static class Program
     {
         try
         {
-            while (!ct.IsCancellationRequested)
-            {
-                var msg = await ReceiveAsync(session.Stream, ct);
-                if (msg is null) break;
+            await foreach (var msg in session.Inbox.Reader.ReadAllAsync(ct))
+                await HostClientMessageAsync(session, session.Peer.Address.ToString(), msg,
+                    states, sessions, mpDir, hostRemotePath, writeLock, snapshotLock,
+                    getHostPid, pushToAll, refreshPeers, ct);
+        }
+        catch (OperationCanceledException) { }
+    }
 
-                var obj = TryParseState(msg);
-                if (obj is null) continue;
+    static async Task HostClientMessageAsync(
+        ClientSession session, string addr,
+        string msg,
+        ConcurrentDictionary<string, JsonObject> states,
+        ConcurrentDictionary<ClientSession, byte> sessions,
+        string mpDir,
+        string hostRemotePath,
+        SemaphoreSlim writeLock,
+        SemaphoreSlim snapshotLock,
+        Func<string?> getHostPid,
+        Action pushToAll,
+        Action refreshPeers,
+        CancellationToken ct)
+    {
+        try
+        {
+            var obj = TryParseState(msg);
+            if (obj is null) return;
 
                 // Control channel (world snapshot request, etc.)
                 if (obj["mp_msg"]?.GetValue<string>() is { } kind)
@@ -642,13 +682,13 @@ static class Program
                     if (kind == "snap_req")
                     {
                         Console.WriteLine($"[HOST] {addr} requested world snapshot");
-                        _ = Task.Run(() => HandleSnapshotRequestAsync(session, mpDir, snapshotLock, ct), ct);
+                        await HandleSnapshotRequestAsync(session, mpDir, snapshotLock, ct);
                     }
-                    continue;
+                    return;
                 }
 
                 var pid = obj["player_id"]?.GetValue<string>();
-                if (pid is null) continue;
+                if (pid is null) return;
 
                 if (session.PlayerId != pid)
                 {
@@ -665,22 +705,9 @@ static class Program
 
                 // Push updated snapshot to every connected client
                 pushToAll();
-            }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { Console.WriteLine($"[HOST] {addr}: {ex.Message}"); }
-        finally
-        {
-            if (session.PlayerId is { } pid)
-            {
-                states.TryRemove(pid, out _);
-                Console.WriteLine($"[HOST] - {addr} ({pid})");
-            }
-            sessions.TryRemove(session, out _);
-            refreshPeers();
-            session.Outbox.Writer.TryComplete();
-            session.Tcp.Dispose();
-        }
     }
 
     // Produces a fresh world snapshot on the host game, then streams it to one
@@ -786,8 +813,7 @@ static class Program
         catch { }
     }
 
-    // Send and receive run concurrently on the same TCP stream.
-    // Sending is fire-and-forget every 100 ms; receiving is immediate on push.
+    // Sending is fire-and-forget every 100 ms; receiving is event-driven.
     // On first connect the client asks the host for its world snapshot.
 
     static async Task<int> RunClientAsync(
@@ -800,32 +826,65 @@ static class Program
         {
             try
             {
-                using var tcp = new TcpClient { NoDelay = true };
-                reporter.Set("connecting", "join", 0);
-                Console.WriteLine($"[CLIENT] Connecting to {host}:{port}…");
-                await tcp.ConnectAsync(host, port, ct);
-                reporter.Set("connected", "join", 1);
-                Console.WriteLine("[CLIENT] Connected!");
-                var stream = tcp.GetStream();
+                var incoming = Channel.CreateUnbounded<string>();
+                var connected = new TaskCompletionSource<NetPeer>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var listener = new RelayListener(
+                    (peer, _) => connected.TrySetResult(peer),
+                    (_, bytes) => incoming.Writer.TryWrite(Encoding.UTF8.GetString(bytes)),
+                    peer =>
+                    {
+                        incoming.Writer.TryComplete();
+                        connected.TrySetException(new IOException(
+                            $"Connection to {peer.Address} was closed."));
+                    });
+                var net = new NetManager(listener);
+                using var pollCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                Task? poll = null;
+                try
+                {
+                    net.Start();
+                    reporter.Set("connecting", "join", 0);
+                    Console.WriteLine($"[CLIENT] Connecting to {host}:{port}…");
+                    net.Connect(host, port, "momi-mp");
+                    poll = Task.Run(async () =>
+                    {
+                        while (!pollCts.IsCancellationRequested)
+                        {
+                            net.PollEvents();
+                            await Task.Delay(10, pollCts.Token);
+                        }
+                    }, pollCts.Token);
+                    var peer = await connected.Task.WaitAsync(ct);
+                    reporter.Set("connected", "join", 1);
+                    Console.WriteLine("[CLIENT] Connected!");
 
-                using var linkCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    using var linkCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
                 // Ask for the host's world exactly once per relay session, so a
                 // network blip that reconnects mid-session won't wipe local play.
-                if (!requestedSnapshot)
-                {
-                    await SendAsync(stream, new JsonObject { ["mp_msg"] = "snap_req" }.ToJsonString(), linkCts.Token);
-                    requestedSnapshot = true;
-                    Console.WriteLine("[CLIENT] Requested world snapshot from host.");
-                }
+                    if (!requestedSnapshot)
+                    {
+                        Send(peer, new JsonObject { ["mp_msg"] = "snap_req" }.ToJsonString(), linkCts.Token);
+                        requestedSnapshot = true;
+                        Console.WriteLine("[CLIENT] Requested world snapshot from host.");
+                    }
 
-                var send    = ClientSendLoop(stream, mpDir, outPath, linkCts.Token);
-                var receive = ClientReceiveLoop(stream, mpDir, remotePath, linkCts.Token);
+                    var send    = ClientSendLoop(peer, mpDir, outPath, linkCts.Token);
+                    var receive = ClientReceiveLoop(incoming.Reader, mpDir, remotePath, linkCts.Token);
 
                 // Whichever loop dies first (network error, disconnect) ends both
-                await Task.WhenAny(send, receive);
-                await linkCts.CancelAsync();
-                try { await Task.WhenAll(send, receive); } catch { }
+                    await Task.WhenAny(send, receive);
+                    await linkCts.CancelAsync();
+                    try { await Task.WhenAll(send, receive); } catch { }
+                }
+                finally
+                {
+                    await pollCts.CancelAsync();
+                    net.Stop();
+                    if (poll is not null)
+                        try { await poll; } catch (OperationCanceledException) { }
+                }
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)               { Console.WriteLine($"[CLIENT] {ex.Message}"); }
@@ -842,7 +901,7 @@ static class Program
         return 0;
     }
 
-    static async Task ClientSendLoop(NetworkStream stream, string mpDir, string outPath, CancellationToken ct)
+    static async Task ClientSendLoop(NetPeer peer, string mpDir, string outPath, CancellationToken ct)
     {
         var resyncPath = Path.Combine(mpDir, "mp_resync");
         while (!ct.IsCancellationRequested)
@@ -853,13 +912,13 @@ static class Program
                 if (File.Exists(resyncPath))
                 {
                     try { File.Delete(resyncPath); } catch { }
-                    await SendAsync(stream, new JsonObject { ["mp_msg"] = "snap_req" }.ToJsonString(), ct);
+                    Send(peer, new JsonObject { ["mp_msg"] = "snap_req" }.ToJsonString(), ct);
                     Console.WriteLine("[CLIENT] New day — re-requesting world snapshot.");
                 }
 
                 var raw = await ReadTextSharedAsync(outPath, ct);
                 if (raw != null)
-                    await SendAsync(stream, raw, ct);
+                    Send(peer, raw, ct);
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex)               { Console.WriteLine($"[CLIENT] Send: {ex.Message}"); return; }
@@ -868,7 +927,7 @@ static class Program
         }
     }
 
-    static async Task ClientReceiveLoop(NetworkStream stream, string mpDir, string remotePath, CancellationToken ct)
+    static async Task ClientReceiveLoop(ChannelReader<string> messages, string mpDir, string remotePath, CancellationToken ct)
     {
         var snap = new SnapshotReceiver(mpDir);
 
@@ -876,8 +935,7 @@ static class Program
         {
             try
             {
-                var msg = await ReceiveAsync(stream, ct);
-                if (msg is null) return;
+                var msg = await messages.ReadAsync(ct);
 
                 // Cheap gate to only parse when it's actually a control message,
                 // so the remote.json path stays a plain file write.
