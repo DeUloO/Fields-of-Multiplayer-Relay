@@ -95,7 +95,8 @@ public abstract record MpControlMessage : IMpControlMessage
     [JsonIgnore]
     public string Identifier => MpMessage;
 
-    public JsonObject ToJson() => JsonSerializer.SerializeToNode(this)!.AsObject();
+    public JsonObject ToJson() =>
+        JsonSerializer.SerializeToNode(this, GetType())!.AsObject();
 }
 
 public sealed record SnapshotRequest : MpControlMessage

@@ -44,6 +44,17 @@ public sealed class RelayMessageTests
         Assert.Equal(3600, begin.Bytes);
     }
 
+    [Fact]
+    public void SnapshotBeginSerializationIncludesDerivedMetadata()
+    {
+        var json = new SnapshotBegin("world_snapshot.json", 4, 3600).ToJson();
+
+        Assert.Equal("snap_begin", json["mp_msg"]!.GetValue<string>());
+        Assert.Equal("world_snapshot.json", json["name"]!.GetValue<string>());
+        Assert.Equal(4, json["chunks"]!.GetValue<int>());
+        Assert.Equal(3600, json["bytes"]!.GetValue<int>());
+    }
+
     [Theory]
     [InlineData("{\"mp_msg\":\"unknown\"}")]
     [InlineData("not json")]
