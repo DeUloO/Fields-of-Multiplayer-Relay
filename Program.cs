@@ -204,10 +204,11 @@ static class Program
     static async Task<int> Main(string[] args)
     {
         bool   noArgs      = args.Length == 0;
+        string firstArg    = noArgs ? "" : args[0].ToLowerInvariant();
+        if (firstArg is "help" or "-h" or "--help" or "/?") { PrintUsage(); return 0; }
+
         bool   firstIsFlag = !noArgs && args[0].StartsWith('-');
         string mode        = (noArgs || firstIsFlag) ? "auto" : args[0].ToLowerInvariant();
-
-        if (mode is "help" or "-h" or "--help" or "/?") { PrintUsage(); return 0; }
 
         string? explicitDir = null;
         string? instanceId  = null;
