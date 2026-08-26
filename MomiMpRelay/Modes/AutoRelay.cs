@@ -36,13 +36,23 @@ public sealed class AutoRelay
 
         async Task TearDownAsync()
         {
-            if (sessionCts is null) return;
+            if (sessionCts is null)
+                return;
             await sessionCts.CancelAsync();
-            if (sessionTask is not null) try { await sessionTask; } catch { }
+            if (sessionTask is not null)
+                try
+                {
+                    await sessionTask;
+                }
+                catch { }
             sessionCts.Dispose();
             sessionCts = null;
             sessionTask = null;
-            try { File.Delete(_remotePath); } catch { }
+            try
+            {
+                File.Delete(_remotePath);
+            }
+            catch { }
         }
 
         _reporter.Set("idle", "off", 0);
@@ -66,9 +76,14 @@ public sealed class AutoRelay
                     sessionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     sessionTask = _runClient(value.Ip, port, sessionCts.Token);
                 }
-                else _reporter.Set("idle", "off", 0);
+                else
+                    _reporter.Set("idle", "off", 0);
             }
-            try { await Task.Delay(50, ct); } catch (OperationCanceledException) { break; }
+            try
+            {
+                await Task.Delay(50, ct);
+            }
+            catch (OperationCanceledException) { break; }
         }
         await TearDownAsync();
         return 0;

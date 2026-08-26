@@ -24,7 +24,11 @@ public sealed class RelayStressTests
             for (var index = 0; index < clientCount; index++)
             {
                 var directory = workspace.ClientDirectories[index];
-                try { File.Delete(Path.Combine(workspace.HostDirectory, "mp_snap_request")); } catch { }
+                try
+                {
+                    File.Delete(Path.Combine(workspace.HostDirectory, "mp_snap_request"));
+                }
+                catch { }
                 var client = RelayProcess.Start("join", port, directory, "127.0.0.1");
                 clients.Add(client);
                 await CompleteEmptySnapshotAsync(workspace.HostDirectory);
@@ -39,7 +43,8 @@ public sealed class RelayStressTests
         }
         finally
         {
-            foreach (var client in clients) client.Dispose();
+            foreach (var client in clients)
+                client.Dispose();
         }
     }
 
@@ -55,7 +60,11 @@ public sealed class RelayStressTests
 
         for (var cycle = 0; cycle < cycles; cycle++)
         {
-            try { File.Delete(Path.Combine(workspace.HostDirectory, "mp_snap_request")); } catch { }
+            try
+            {
+                File.Delete(Path.Combine(workspace.HostDirectory, "mp_snap_request"));
+            }
+            catch { }
             using var client = RelayProcess.Start("join", port, workspace.ClientDirectories[0], "127.0.0.1");
             await CompleteEmptySnapshotAsync(workspace.HostDirectory);
             client.Dispose();
@@ -80,7 +89,11 @@ public sealed class RelayStressTests
         {
             for (var index = 0; index < clientCount; index++)
             {
-                try { File.Delete(Path.Combine(workspace.HostDirectory, "mp_snap_request")); } catch { }
+                try
+                {
+                    File.Delete(Path.Combine(workspace.HostDirectory, "mp_snap_request"));
+                }
+                catch { }
                 var client = RelayProcess.Start("join", port, workspace.ClientDirectories[index], "127.0.0.1");
                 clients.Add(client);
                 await CompleteEmptySnapshotAsync(workspace.HostDirectory);
@@ -94,87 +107,98 @@ public sealed class RelayStressTests
         }
         finally
         {
-            foreach (var client in clients) client.Dispose();
+            foreach (var client in clients)
+                client.Dispose();
         }
     }
 
-        [Trait("Category", "Stress")]
-        [Fact(Timeout = 180000)]
-        public async Task SlowFilesystemConsumersDoNotStopHostUpdates()
+    [Trait("Category", "Stress")]
+    [Fact(Timeout = 180000)]
+    public async Task SlowFilesystemConsumersDoNotStopHostUpdates()
+    {
+        var clientCount = ReadSetting("MOMI_STRESS_SLOW_CLIENTS", 4, 1, 12);
+        var updateCount = ReadSetting("MOMI_STRESS_SLOW_UPDATES", 500, 50, 5000);
+        using var workspace = new StressWorkspace(clientCount);
+        var port = GetFreePort();
+        using var host = RelayProcess.Start("host", port, workspace.HostDirectory);
+        await WriteStateAsync(workspace.HostDirectory, "host-player", 0);
+        var clients = new List<RelayProcess>();
+        try
         {
-            var clientCount = ReadSetting("MOMI_STRESS_SLOW_CLIENTS", 4, 1, 12);
-            var updateCount = ReadSetting("MOMI_STRESS_SLOW_UPDATES", 500, 50, 5000);
-            using var workspace = new StressWorkspace(clientCount);
-            var port = GetFreePort();
-            using var host = RelayProcess.Start("host", port, workspace.HostDirectory);
-            await WriteStateAsync(workspace.HostDirectory, "host-player", 0);
-            var clients = new List<RelayProcess>();
-            try
+            for (var index = 0; index < clientCount; index++)
             {
-                for (var index = 0; index < clientCount; index++)
+                try
                 {
-                    try { File.Delete(Path.Combine(workspace.HostDirectory, "mp_snap_request")); } catch { }
-                    var client = RelayProcess.Start("join", port, workspace.ClientDirectories[index], "127.0.0.1");
-                    clients.Add(client);
-                    await CompleteEmptySnapshotAsync(workspace.HostDirectory);
+                    File.Delete(Path.Combine(workspace.HostDirectory, "mp_snap_request"));
                 }
-
-                var updateTask = SendUpdatesAsync(workspace.ClientDirectories[0], "slow-source", updateCount);
-                var lockTasks = workspace.ClientDirectories.Select(directory =>
-                    LockRemoteFileRepeatedlyAsync(directory, TimeSpan.FromSeconds(8))).ToArray();
-                await Task.WhenAll(updateTask, Task.WhenAll(lockTasks));
-
-                Assert.True(await WaitUntilAsync(
-                    () => HasNamedPlayersAsync(Path.Combine(workspace.HostDirectory, "remote.json"), "slow-source", 1),
-                    TimeSpan.FromSeconds(30)));
+                catch { }
+                var client = RelayProcess.Start("join", port, workspace.ClientDirectories[index], "127.0.0.1");
+                clients.Add(client);
+                await CompleteEmptySnapshotAsync(workspace.HostDirectory);
             }
-            finally
-            {
-                foreach (var client in clients) client.Dispose();
-            }
+
+            var updateTask = SendUpdatesAsync(workspace.ClientDirectories[0], "slow-source", updateCount);
+            var lockTasks = workspace.ClientDirectories.Select(directory =>
+                LockRemoteFileRepeatedlyAsync(directory, TimeSpan.FromSeconds(8))).ToArray();
+            await Task.WhenAll(updateTask, Task.WhenAll(lockTasks));
+
+            Assert.True(await WaitUntilAsync(
+                () => HasNamedPlayersAsync(Path.Combine(workspace.HostDirectory, "remote.json"), "slow-source", 1),
+                TimeSpan.FromSeconds(30)));
         }
-
-        [Trait("Category", "Stress")]
-        [Fact(Timeout = 300000)]
-        public async Task RelayRemainsHealthyDuringSoakPeriod()
+        finally
         {
-            var seconds = ReadSetting("MOMI_STRESS_SOAK_SECONDS", 30, 10, 300);
-            using var workspace = new StressWorkspace(2);
-            var port = GetFreePort();
-            using var host = RelayProcess.Start("host", port, workspace.HostDirectory);
-            await WriteStateAsync(workspace.HostDirectory, "host-player", 0);
-            var clients = new List<RelayProcess>();
-            try
-            {
-                for (var index = 0; index < 2; index++)
-                {
-                    try { File.Delete(Path.Combine(workspace.HostDirectory, "mp_snap_request")); } catch { }
-                    var client = RelayProcess.Start("join", port, workspace.ClientDirectories[index], "127.0.0.1");
-                    clients.Add(client);
-                    await CompleteEmptySnapshotAsync(workspace.HostDirectory);
-                }
-
-                var end = DateTime.UtcNow.AddSeconds(seconds);
-                var tick = 0;
-                while (DateTime.UtcNow < end)
-                {
-                    await Task.WhenAll(
-                        WriteStateAsync(workspace.ClientDirectories[0], "soak-player-0", tick),
-                        WriteStateAsync(workspace.ClientDirectories[1], "soak-player-1", tick));
-                    tick++;
-                    await Task.Delay(50);
-                }
-
-                Assert.True(await WaitUntilAsync(
-                    () => HasNamedPlayersAsync(Path.Combine(workspace.HostDirectory, "remote.json"), "soak-player-", 2),
-                    TimeSpan.FromSeconds(30)));
-                Assert.All(clients, client => Assert.False(client.HasExited));
-            }
-            finally
-            {
-                foreach (var client in clients) client.Dispose();
-            }
+            foreach (var client in clients)
+                client.Dispose();
         }
+    }
+
+    [Trait("Category", "Stress")]
+    [Fact(Timeout = 300000)]
+    public async Task RelayRemainsHealthyDuringSoakPeriod()
+    {
+        var seconds = ReadSetting("MOMI_STRESS_SOAK_SECONDS", 30, 10, 300);
+        using var workspace = new StressWorkspace(2);
+        var port = GetFreePort();
+        using var host = RelayProcess.Start("host", port, workspace.HostDirectory);
+        await WriteStateAsync(workspace.HostDirectory, "host-player", 0);
+        var clients = new List<RelayProcess>();
+        try
+        {
+            for (var index = 0; index < 2; index++)
+            {
+                try
+                {
+                    File.Delete(Path.Combine(workspace.HostDirectory, "mp_snap_request"));
+                }
+                catch { }
+                var client = RelayProcess.Start("join", port, workspace.ClientDirectories[index], "127.0.0.1");
+                clients.Add(client);
+                await CompleteEmptySnapshotAsync(workspace.HostDirectory);
+            }
+
+            var end = DateTime.UtcNow.AddSeconds(seconds);
+            var tick = 0;
+            while (DateTime.UtcNow < end)
+            {
+                await Task.WhenAll(
+                    WriteStateAsync(workspace.ClientDirectories[0], "soak-player-0", tick),
+                    WriteStateAsync(workspace.ClientDirectories[1], "soak-player-1", tick));
+                tick++;
+                await Task.Delay(50);
+            }
+
+            Assert.True(await WaitUntilAsync(
+                () => HasNamedPlayersAsync(Path.Combine(workspace.HostDirectory, "remote.json"), "soak-player-", 2),
+                TimeSpan.FromSeconds(30)));
+            Assert.All(clients, client => Assert.False(client.HasExited));
+        }
+        finally
+        {
+            foreach (var client in clients)
+                client.Dispose();
+        }
+    }
 
     static async Task SendUpdatesAsync(string directory, string playerId, int count)
     {
@@ -217,7 +241,8 @@ public sealed class RelayStressTests
 
     static async Task<bool> HasAllPlayersAsync(string path, int clientCount)
     {
-        if (!File.Exists(path)) return false;
+        if (!File.Exists(path))
+            return false;
         try
         {
             using var document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
@@ -231,7 +256,8 @@ public sealed class RelayStressTests
 
     static async Task<bool> HasNamedPlayersAsync(string path, string prefix, int count)
     {
-        if (!File.Exists(path)) return false;
+        if (!File.Exists(path))
+            return false;
         try
         {
             using var document = JsonDocument.Parse(await File.ReadAllTextAsync(path));
@@ -243,8 +269,12 @@ public sealed class RelayStressTests
 
     static async Task<bool> HasPeerCountAsync(string path, int expected)
     {
-        if (!File.Exists(path)) return false;
-        try { return JsonDocument.Parse(await File.ReadAllTextAsync(path)).RootElement.GetProperty("peers").GetInt32() == expected; }
+        if (!File.Exists(path))
+            return false;
+        try
+        {
+            return JsonDocument.Parse(await File.ReadAllTextAsync(path)).RootElement.GetProperty("peers").GetInt32() == expected;
+        }
         catch { return false; }
     }
 
@@ -253,7 +283,8 @@ public sealed class RelayStressTests
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
-            if (await condition()) return true;
+            if (await condition())
+                return true;
             await Task.Delay(50);
         }
         return await condition();
@@ -279,8 +310,14 @@ public sealed class RelayStressTests
     sealed class StressWorkspace : IDisposable
     {
         readonly string _root = Path.Combine(Path.GetTempPath(), "MomiMpRelay.StressTests", Guid.NewGuid().ToString("N"));
-        public string HostDirectory { get; }
-        public IReadOnlyList<string> ClientDirectories { get; }
+        public string HostDirectory
+        {
+            get;
+        }
+        public IReadOnlyList<string> ClientDirectories
+        {
+            get;
+        }
 
         public StressWorkspace(int clientCount)
         {
@@ -298,7 +335,11 @@ public sealed class RelayStressTests
 
         public void Dispose()
         {
-            try { Directory.Delete(_root, true); } catch { }
+            try
+            {
+                Directory.Delete(_root, true);
+            }
+            catch { }
         }
     }
 
@@ -323,7 +364,8 @@ public sealed class RelayStressTests
             };
             process.StartInfo.ArgumentList.Add(typeof(MomiMpRelay.Models.RelayPacket).Assembly.Location);
             process.StartInfo.ArgumentList.Add(mode);
-            if (host is not null) process.StartInfo.ArgumentList.Add(host);
+            if (host is not null)
+                process.StartInfo.ArgumentList.Add(host);
             process.StartInfo.ArgumentList.Add("--port");
             process.StartInfo.ArgumentList.Add(port.ToString());
             process.StartInfo.ArgumentList.Add("--dir");
@@ -334,8 +376,13 @@ public sealed class RelayStressTests
 
         public void Dispose()
         {
-            if (_process.HasExited) return;
-            try { _process.Kill(true); } catch (InvalidOperationException) { }
+            if (_process.HasExited)
+                return;
+            try
+            {
+                _process.Kill(true);
+            }
+            catch (InvalidOperationException) { }
             _process.WaitForExit(5000);
         }
     }

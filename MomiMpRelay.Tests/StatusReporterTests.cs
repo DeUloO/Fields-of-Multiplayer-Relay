@@ -51,6 +51,10 @@ public sealed class StatusReporterTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_directory, recursive: true); } catch { }
+        try
+        {
+            Directory.Delete(_directory, recursive: true);
+        }
+        catch { }
     }
 }

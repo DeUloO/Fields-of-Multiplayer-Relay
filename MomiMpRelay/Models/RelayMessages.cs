@@ -35,10 +35,16 @@ public sealed record RelayControl
     public string Ip { get; init; } = "127.0.0.1";
 
     [JsonPropertyName("port")]
-    public int Port { get; init; }
+    public int Port
+    {
+        get; init;
+    }
 
     [JsonPropertyName("seq")]
-    public long Seq { get; init; }
+    public long Seq
+    {
+        get; init;
+    }
 }
 
 sealed class RelayControlJsonConverter : JsonConverter<RelayControl>
@@ -67,16 +73,24 @@ sealed class RelayControlJsonConverter : JsonConverter<RelayControl>
 
     static int ReadInt(JsonElement root, string propertyName)
     {
-        if (!root.TryGetProperty(propertyName, out var value)) return 0;
-        try { return value.GetInt32(); }
+        if (!root.TryGetProperty(propertyName, out var value))
+            return 0;
+        try
+        {
+            return value.GetInt32();
+        }
         catch (FormatException) { return (int)value.GetDouble(); }
         catch (InvalidOperationException) { return 0; }
     }
 
     static long ReadLong(JsonElement root, string propertyName)
     {
-        if (!root.TryGetProperty(propertyName, out var value)) return 0;
-        try { return value.GetInt64(); }
+        if (!root.TryGetProperty(propertyName, out var value))
+            return 0;
+        try
+        {
+            return value.GetInt64();
+        }
         catch (FormatException) { return (long)value.GetDouble(); }
         catch (InvalidOperationException) { return 0; }
     }
@@ -84,13 +98,19 @@ sealed class RelayControlJsonConverter : JsonConverter<RelayControl>
 
 public interface IRelayMessage
 {
-    string Identifier { get; }
+    string Identifier
+    {
+        get;
+    }
     JsonObject ToJson();
 }
 
 public interface IMpControlMessage : IRelayMessage
 {
-    string MpMessage { get; }
+    string MpMessage
+    {
+        get;
+    }
 }
 
 public abstract record MpControlMessage : IMpControlMessage
@@ -98,7 +118,10 @@ public abstract record MpControlMessage : IMpControlMessage
     protected MpControlMessage(string mpMessage) => MpMessage = mpMessage;
 
     [JsonPropertyName("mp_msg")]
-    public string MpMessage { get; }
+    public string MpMessage
+    {
+        get;
+    }
 
     [JsonIgnore]
     public string Identifier => MpMessage;

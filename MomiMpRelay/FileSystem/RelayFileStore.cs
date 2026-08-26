@@ -54,7 +54,11 @@ public static class RelayFileStore
             await File.WriteAllTextAsync(tmp, json, ct);
             for (int attempt = 0; attempt < 6; attempt++)
             {
-                try { File.Move(tmp, remotePath, overwrite: true); return true; }
+                try
+                {
+                    File.Move(tmp, remotePath, overwrite: true);
+                    return true;
+                }
                 catch (IOException) when (attempt < 5) { await Task.Delay(15, ct); }
                 catch (UnauthorizedAccessException) when (attempt < 5) { await Task.Delay(15, ct); }
             }
@@ -82,9 +86,17 @@ public static class RelayFileStore
         try
         {
             foreach (var path in Directory.EnumerateFiles(directory, "*.tmp"))
-                try { File.Delete(path); } catch { }
+                try
+                {
+                    File.Delete(path);
+                }
+                catch { }
             foreach (var path in Directory.EnumerateFiles(directory, "*.part"))
-                try { File.Delete(path); } catch { }
+                try
+                {
+                    File.Delete(path);
+                }
+                catch { }
         }
         catch (Exception ex) { RelayLogger.Error($"[RELAY] temporary-file cleanup failed: {ex.Message}"); }
     }

@@ -23,7 +23,8 @@ public static class RelayDirectories
             foreach (var sub in Directory.GetDirectories(FomRoot))
             {
                 var mm = Path.Combine(sub, "momi_mp");
-                if (Directory.Exists(mm)) candidates.Add(mm);
+                if (Directory.Exists(mm))
+                    candidates.Add(mm);
             }
         }
         catch { }
@@ -38,7 +39,11 @@ public static class RelayDirectories
                 if (File.Exists(control))
                 {
                     var time = File.GetLastWriteTimeUtc(control);
-                    if (time > bestTime) { bestTime = time; best = candidate; }
+                    if (time > bestTime)
+                    {
+                        bestTime = time;
+                        best = candidate;
+                    }
                 }
             }
             catch { }

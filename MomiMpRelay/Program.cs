@@ -16,7 +16,11 @@ static class Program
     {
         bool noArgs = args.Length == 0;
         string firstArg = noArgs ? "" : args[0].ToLowerInvariant();
-        if (firstArg is "help" or "-h" or "--help" or "/?") { PrintUsage(); return 0; }
+        if (firstArg is "help" or "-h" or "--help" or "/?")
+        {
+            PrintUsage();
+            return 0;
+        }
 
         bool firstIsFlag = !noArgs && args[0].StartsWith('-');
         string mode = (noArgs || firstIsFlag) ? "auto" : args[0].ToLowerInvariant();
@@ -27,10 +31,14 @@ static class Program
 
         for (int i = firstIsFlag ? 0 : 1; i < args.Length; i++)
         {
-            if (args[i] == "--port" && i + 1 < args.Length) port = int.Parse(args[++i]);
-            else if (args[i] == "--dir" && i + 1 < args.Length) explicitDir = args[++i];
-            else if (args[i] == "--instance" && i + 1 < args.Length) instanceId = args[++i];
-            else if (mode == "join" && connectHost is null && !args[i].StartsWith('-')) connectHost = args[i];
+            if (args[i] == "--port" && i + 1 < args.Length)
+                port = int.Parse(args[++i]);
+            else if (args[i] == "--dir" && i + 1 < args.Length)
+                explicitDir = args[++i];
+            else if (args[i] == "--instance" && i + 1 < args.Length)
+                instanceId = args[++i];
+            else if (mode == "join" && connectHost is null && !args[i].StartsWith('-'))
+                connectHost = args[i];
         }
 
         string mpDir = explicitDir ?? (instanceId is not null
@@ -75,9 +83,17 @@ static class Program
         catch (Exception ex) { errored = true; exitCode = 1; RelayLogger.Error($"Fatal: {ex.Message}"); }
         finally
         {
-            try { File.Delete(remotePath); } catch { }
+            try
+            {
+                File.Delete(remotePath);
+            }
+            catch { }
             cts.Cancel();
-            try { await statusTask; } catch { }
+            try
+            {
+                await statusTask;
+            }
+            catch { }
             reporter.TryDelete();
             RelayLogger.Info("[MOMI-MP] Stopped.");
         }
@@ -86,7 +102,11 @@ static class Program
         {
             Console.WriteLine();
             Console.WriteLine("Press any key to close…");
-            try { Console.ReadKey(true); } catch { }
+            try
+            {
+                Console.ReadKey(true);
+            }
+            catch { }
         }
         return exitCode;
     }
@@ -121,5 +141,10 @@ static class Program
         Console.WriteLine("Default port : " + DefaultPort);
     }
 
-    static int Err(string message) { Console.Error.WriteLine("Error: " + message); PrintUsage(); return 1; }
+    static int Err(string message)
+    {
+        Console.Error.WriteLine("Error: " + message);
+        PrintUsage();
+        return 1;
+    }
 }

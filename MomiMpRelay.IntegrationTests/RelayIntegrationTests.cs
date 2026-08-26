@@ -56,7 +56,11 @@ public sealed class RelayIntegrationTests
         using var clientOne = RelayProcess.Start("join", port, workspace.ClientDirectory, "127.0.0.1");
         await CompleteEmptySnapshotAsync(workspace.HostDirectory);
         var secondDirectory = workspace.CreateAdditionalDirectory("client-two");
-        try { File.Delete(Path.Combine(workspace.HostDirectory, "mp_snap_request")); } catch { }
+        try
+        {
+            File.Delete(Path.Combine(workspace.HostDirectory, "mp_snap_request"));
+        }
+        catch { }
         using var clientTwo = RelayProcess.Start("join", port, secondDirectory, "127.0.0.1");
         await CompleteEmptySnapshotAsync(workspace.HostDirectory);
         await Task.WhenAll(
@@ -102,7 +106,8 @@ public sealed class RelayIntegrationTests
         await WriteStateAsync(workspace.HostDirectory, "host-player");
         using var client = RelayProcess.Start("join", port, workspace.ClientDirectory, "127.0.0.1");
         await CompleteEmptySnapshotAsync(workspace.HostDirectory);
-        for (var tick = 0; tick < 100; tick++) await File.WriteAllTextAsync(Path.Combine(workspace.ClientDirectory, "out.json"), $"{{\"player_id\":\"rapid-player\",\"tick\":{tick}}}");
+        for (var tick = 0; tick < 100; tick++)
+            await File.WriteAllTextAsync(Path.Combine(workspace.ClientDirectory, "out.json"), $"{{\"player_id\":\"rapid-player\",\"tick\":{tick}}}");
         Assert.True(await WaitUntilAsync(() => ContainsTextAsync(Path.Combine(workspace.HostDirectory, "remote.json"), "rapid-player"), TimeSpan.FromSeconds(15)));
         Assert.True(await WaitUntilAsync(() => HasPlayerTickAsync(Path.Combine(workspace.HostDirectory, "remote.json"), "rapid-player", 99), TimeSpan.FromSeconds(15)));
     }
@@ -115,11 +120,21 @@ public sealed class RelayIntegrationTests
         await File.WriteAllBytesAsync(Path.Combine(directory, "world_snapshot.json"), []);
         await File.WriteAllTextAsync(Path.Combine(directory, "mp_snap_ready"), "ready");
     }
-    static async Task<bool> ContainsTextAsync(string path, string value) { if (!File.Exists(path)) return false; try { return (await File.ReadAllTextAsync(path)).Contains(value, StringComparison.Ordinal); } catch (IOException) { return false; } }
+    static async Task<bool> ContainsTextAsync(string path, string value)
+    {
+        if (!File.Exists(path))
+            return false;
+        try
+        {
+            return (await File.ReadAllTextAsync(path)).Contains(value, StringComparison.Ordinal);
+        }
+        catch (IOException) { return false; }
+    }
     static Task<bool> ContainsPlayerAsync(string path, string value) => ContainsTextAsync(path, value);
     static async Task<bool> HasPlayerTickAsync(string path, string playerId, int tick)
     {
-        if (!File.Exists(path)) return false;
+        if (!File.Exists(path))
+            return false;
         try
         {
             using var document = System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(path));
@@ -130,35 +145,120 @@ public sealed class RelayIntegrationTests
         catch { }
         return false;
     }
-    static async Task<bool> StatusHasPeersAsync(string path, int peers) { if (!File.Exists(path)) return false; try { return System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(path)).RootElement.GetProperty("peers").GetInt32() == peers; } catch { return false; } }
-    static async Task<bool> FilesEqualAsync(string path, byte[] expected) { if (!File.Exists(path)) return false; try { var actual = await File.ReadAllBytesAsync(path); return actual.Length == expected.Length && actual.AsSpan().SequenceEqual(expected); } catch (IOException) { return false; } }
-    static async Task<bool> WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout) { var deadline = DateTime.UtcNow + timeout; while (DateTime.UtcNow < deadline) { if (await condition()) return true; await Task.Delay(50); } return await condition(); }
+    static async Task<bool> StatusHasPeersAsync(string path, int peers)
+    {
+        if (!File.Exists(path))
+            return false;
+        try
+        {
+            return System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(path)).RootElement.GetProperty("peers").GetInt32() == peers;
+        }
+        catch { return false; }
+    }
+    static async Task<bool> FilesEqualAsync(string path, byte[] expected)
+    {
+        if (!File.Exists(path))
+            return false;
+        try
+        {
+            var actual = await File.ReadAllBytesAsync(path);
+            return actual.Length == expected.Length && actual.AsSpan().SequenceEqual(expected);
+        }
+        catch (IOException) { return false; }
+    }
+    static async Task<bool> WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await condition())
+                return true;
+            await Task.Delay(50);
+        }
+        return await condition();
+    }
     static Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan timeout) => WaitUntilAsync(() => Task.FromResult(condition()), timeout);
-    static int GetFreePort() { using var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start(); return ((IPEndPoint)listener.LocalEndpoint).Port; }
+    static int GetFreePort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return ((IPEndPoint)listener.LocalEndpoint).Port;
+    }
 
     sealed class TestWorkspace : IDisposable
     {
         readonly string _root = Path.Combine(Path.GetTempPath(), "MomiMpRelay.Tests", Guid.NewGuid().ToString("N"));
         public string HostDirectory { get; } = "";
         public string ClientDirectory { get; } = "";
-        public TestWorkspace() { HostDirectory = Path.Combine(_root, "host"); ClientDirectory = Path.Combine(_root, "client"); Directory.CreateDirectory(HostDirectory); Directory.CreateDirectory(ClientDirectory); }
-        public string CreateAdditionalDirectory(string name) { var path = Path.Combine(_root, name); Directory.CreateDirectory(path); return path; }
-        public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
+        public TestWorkspace()
+        {
+            HostDirectory = Path.Combine(_root, "host");
+            ClientDirectory = Path.Combine(_root, "client");
+            Directory.CreateDirectory(HostDirectory);
+            Directory.CreateDirectory(ClientDirectory);
+        }
+        public string CreateAdditionalDirectory(string name)
+        {
+            var path = Path.Combine(_root, name);
+            Directory.CreateDirectory(path);
+            return path;
+        }
+        public void Dispose()
+        {
+            try
+            {
+                Directory.Delete(_root, true);
+            }
+            catch { }
+        }
     }
 
     sealed class RelayProcess : IDisposable
     {
         readonly Process _process; readonly StringBuilder _output = new();
-        RelayProcess(Process process) { _process = process; _process.OutputDataReceived += (_, e) => { if (e.Data is not null) lock (_output) _output.AppendLine(e.Data); }; _process.ErrorDataReceived += (_, e) => { if (e.Data is not null) lock (_output) _output.AppendLine(e.Data); }; }
-        public string Output { get { lock (_output) return _output.ToString(); } }
+        RelayProcess(Process process)
+        {
+            _process = process;
+            _process.OutputDataReceived += (_, e) => { if (e.Data is not null) lock (_output) _output.AppendLine(e.Data); };
+            _process.ErrorDataReceived += (_, e) => { if (e.Data is not null) lock (_output) _output.AppendLine(e.Data); };
+        }
+        public string Output
+        {
+            get
+            {
+                lock (_output)
+                    return _output.ToString();
+            }
+        }
         public bool HasExited => _process.HasExited;
         public static RelayProcess Start(string mode, int port, string directory, string? host = null)
         {
             var process = new Process { StartInfo = new ProcessStartInfo { FileName = "dotnet", UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true } };
-            process.StartInfo.ArgumentList.Add(typeof(MomiMpRelay.Models.RelayPacket).Assembly.Location); process.StartInfo.ArgumentList.Add(mode); if (host is not null) process.StartInfo.ArgumentList.Add(host); process.StartInfo.ArgumentList.Add("--port"); process.StartInfo.ArgumentList.Add(port.ToString()); process.StartInfo.ArgumentList.Add("--dir"); process.StartInfo.ArgumentList.Add(directory);
-            var relay = new RelayProcess(process); Assert.True(process.Start()); process.BeginOutputReadLine(); process.BeginErrorReadLine(); return relay;
+            process.StartInfo.ArgumentList.Add(typeof(MomiMpRelay.Models.RelayPacket).Assembly.Location);
+            process.StartInfo.ArgumentList.Add(mode);
+            if (host is not null)
+                process.StartInfo.ArgumentList.Add(host);
+            process.StartInfo.ArgumentList.Add("--port");
+            process.StartInfo.ArgumentList.Add(port.ToString());
+            process.StartInfo.ArgumentList.Add("--dir");
+            process.StartInfo.ArgumentList.Add(directory);
+            var relay = new RelayProcess(process);
+            Assert.True(process.Start());
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            return relay;
         }
-        public void Stop() { if (_process.HasExited) return; try { _process.Kill(true); } catch (InvalidOperationException) { } _process.WaitForExit(5000); }
+        public void Stop()
+        {
+            if (_process.HasExited)
+                return;
+            try
+            {
+                _process.Kill(true);
+            }
+            catch (InvalidOperationException) { }
+            _process.WaitForExit(5000);
+        }
         public void Dispose() => Stop();
     }
 }

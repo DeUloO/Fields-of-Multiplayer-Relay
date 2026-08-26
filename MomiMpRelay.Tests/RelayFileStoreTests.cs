@@ -82,6 +82,10 @@ public sealed class RelayFileStoreTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_directory, recursive: true); } catch { }
+        try
+        {
+            Directory.Delete(_directory, recursive: true);
+        }
+        catch { }
     }
 }

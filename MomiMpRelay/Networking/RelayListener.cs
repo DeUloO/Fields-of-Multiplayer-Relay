@@ -44,7 +44,9 @@ sealed class RelayListener : INetEventListener
         _networkError(endPoint, socketError);
     public void OnNetworkReceiveUnconnected(IPEndPoint remoteEndPoint, NetPacketReader reader,
         UnconnectedMessageType messageType) => reader.Recycle();
-    public void OnNetworkLatencyUpdate(NetPeer peer, int latency) { }
+    public void OnNetworkLatencyUpdate(NetPeer peer, int latency)
+    {
+    }
     public void OnConnectionRequest(ConnectionRequest request) =>
         request.AcceptIfKey(RelayProtocol.ConnectionKey);
 }

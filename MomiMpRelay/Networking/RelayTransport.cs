@@ -23,7 +23,10 @@ static class RelayTransport
         IRelayMessage message, CancellationToken ct)
     {
         await session.WriteLock.WaitAsync(ct);
-        try { Send(session.Peer, message, ct); }
+        try
+        {
+            Send(session.Peer, message, ct);
+        }
         finally { session.WriteLock.Release(); }
     }
 
@@ -32,7 +35,10 @@ static class RelayTransport
         CancellationToken ct)
     {
         await session.WriteLock.WaitAsync(ct);
-        try { SendSnapshotChunk(session.Peer, fileId, sequence, bytes, offset, count, ct); }
+        try
+        {
+            SendSnapshotChunk(session.Peer, fileId, sequence, bytes, offset, count, ct);
+        }
         finally { session.WriteLock.Release(); }
     }
 }

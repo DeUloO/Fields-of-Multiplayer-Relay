@@ -15,7 +15,10 @@ public sealed class StatusReporter
 
     public void Set(string state, string role, int peers, string? detail = null)
     {
-        _state = state; _role = role; _peers = peers; _detail = detail;
+        _state = state;
+        _role = role;
+        _peers = peers;
+        _detail = detail;
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -23,7 +26,11 @@ public sealed class StatusReporter
         while (!ct.IsCancellationRequested)
         {
             await WriteOnceAsync(ct);
-            try { await Task.Delay(500, ct); } catch { break; }
+            try
+            {
+                await Task.Delay(500, ct);
+            }
+            catch { break; }
         }
     }
 
@@ -46,5 +53,12 @@ public sealed class StatusReporter
         catch { }
     }
 
-    public void TryDelete() { try { File.Delete(_path); } catch { } }
+    public void TryDelete()
+    {
+        try
+        {
+            File.Delete(_path);
+        }
+        catch { }
+    }
 }

@@ -22,57 +22,61 @@ public sealed class SnapshotReceiver : IDisposable
         switch (message)
         {
             case SnapshotBegin begin:
-            {
-                var name = begin.Name;
-                if (!TryGetFileId(name, out _)
-                    || begin.Chunks < 0 || begin.Bytes < 0
-                    || (begin.Bytes == 0 && begin.Chunks != 0)
-                    || (begin.Bytes > 0 && begin.Chunks == 0))
                 {
-                    RelayLogger.Error($"[CLIENT] Invalid snapshot metadata for {name}; ignoring.");
+                    var name = begin.Name;
+                    if (!TryGetFileId(name, out _)
+                        || begin.Chunks < 0 || begin.Bytes < 0
+                        || (begin.Bytes == 0 && begin.Chunks != 0)
+                        || (begin.Bytes > 0 && begin.Chunks == 0))
+                    {
+                        RelayLogger.Error($"[CLIENT] Invalid snapshot metadata for {name}; ignoring.");
+                        break;
+                    }
+                    CloseOne(name);
+                    if (!_snapshotInProgress)
+                    {
+                        _completedFiles.Clear();
+                        _snapshotInProgress = true;
+                    }
+                    var part = Path.Combine(_mpDir, name + ".part");
+                    _open[name] = new FileStream(part, FileMode.Create, FileAccess.Write,
+                        FileShare.None, 1 << 16, useAsync: true);
+                    _nextChunk[name] = 0;
+                    _expectedChunks[name] = begin.Chunks;
+                    _expectedBytes[name] = begin.Bytes;
+                    _receivedBytes[name] = 0;
+                    _activeFiles.Add(name);
+                    RelayLogger.Info($"[CLIENT] Receiving {name} ({begin.Bytes} bytes)…");
                     break;
                 }
-                CloseOne(name);
-                if (!_snapshotInProgress)
-                {
-                    _completedFiles.Clear();
-                    _snapshotInProgress = true;
-                }
-                var part = Path.Combine(_mpDir, name + ".part");
-                _open[name] = new FileStream(part, FileMode.Create, FileAccess.Write,
-                    FileShare.None, 1 << 16, useAsync: true);
-                _nextChunk[name] = 0;
-                _expectedChunks[name] = begin.Chunks;
-                _expectedBytes[name] = begin.Bytes;
-                _receivedBytes[name] = 0;
-                _activeFiles.Add(name);
-                RelayLogger.Info($"[CLIENT] Receiving {name} ({begin.Bytes} bytes)…");
-                break;
-            }
             case SnapshotEnd end:
-            {
-                var name = end.Name;
-                if (!_open.ContainsKey(name) ||
-                    !_nextChunk.TryGetValue(name, out var received) ||
-                    !_expectedChunks.TryGetValue(name, out var expected) ||
-                    received != expected ||
-                    !_expectedBytes.TryGetValue(name, out var expectedBytes) ||
-                    !_receivedBytes.TryGetValue(name, out var receivedBytes) ||
-                    receivedBytes != expectedBytes)
                 {
-                    RelayLogger.Error($"[CLIENT] Incomplete snapshot {name}; ignoring.");
-                    CloseOne(name, deletePart: true);
+                    var name = end.Name;
+                    if (!_open.ContainsKey(name) ||
+                        !_nextChunk.TryGetValue(name, out var received) ||
+                        !_expectedChunks.TryGetValue(name, out var expected) ||
+                        received != expected ||
+                        !_expectedBytes.TryGetValue(name, out var expectedBytes) ||
+                        !_receivedBytes.TryGetValue(name, out var receivedBytes) ||
+                        receivedBytes != expectedBytes)
+                    {
+                        RelayLogger.Error($"[CLIENT] Incomplete snapshot {name}; ignoring.");
+                        CloseOne(name, deletePart: true);
+                        break;
+                    }
+                    CloseOne(name);
+                    _activeFiles.Remove(name);
+                    _completedFiles.Add(name);
+                    var part = Path.Combine(_mpDir, name + ".part");
+                    var final = Path.Combine(_mpDir, name);
+                    try
+                    {
+                        if (File.Exists(part))
+                            File.Move(part, final, overwrite: true);
+                    }
+                    catch (Exception ex) { RelayLogger.Error($"[CLIENT] snap_end {name}: {ex.Message}"); }
                     break;
                 }
-                CloseOne(name);
-                _activeFiles.Remove(name);
-                _completedFiles.Add(name);
-                var part = Path.Combine(_mpDir, name + ".part");
-                var final = Path.Combine(_mpDir, name);
-                try { if (File.Exists(part)) File.Move(part, final, overwrite: true); }
-                catch (Exception ex) { RelayLogger.Error($"[CLIENT] snap_end {name}: {ex.Message}"); }
-                break;
-            }
             case SnapshotDone:
                 if (!_snapshotInProgress || _activeFiles.Count != 0 ||
                     !_completedFiles.Contains("world_snapshot.json"))
@@ -108,7 +112,8 @@ public sealed class SnapshotReceiver : IDisposable
             !_receivedBytes.TryGetValue(name, out var receivedBytes) ||
             bytes.Length > expectedBytes - receivedBytes)
         {
-            if (name is not null && _open.ContainsKey(name)) CloseOne(name, deletePart: true);
+            if (name is not null && _open.ContainsKey(name))
+                CloseOne(name, deletePart: true);
             return;
         }
 
@@ -132,7 +137,11 @@ public sealed class SnapshotReceiver : IDisposable
     {
         if (_open.TryGetValue(name, out var fs))
         {
-            try { fs.Dispose(); } catch { }
+            try
+            {
+                fs.Dispose();
+            }
+            catch { }
             _open.Remove(name);
             _nextChunk.Remove(name);
             _expectedChunks.Remove(name);
@@ -141,14 +150,19 @@ public sealed class SnapshotReceiver : IDisposable
             _activeFiles.Remove(name);
             if (deletePart)
             {
-                try { File.Delete(Path.Combine(_mpDir, name + ".part")); } catch { }
+                try
+                {
+                    File.Delete(Path.Combine(_mpDir, name + ".part"));
+                }
+                catch { }
             }
         }
     }
 
     void CleanupSnapshot(bool deleteParts)
     {
-        foreach (var name in _open.Keys.ToArray()) CloseOne(name, deleteParts);
+        foreach (var name in _open.Keys.ToArray())
+            CloseOne(name, deleteParts);
         _activeFiles.Clear();
         _completedFiles.Clear();
         _snapshotInProgress = false;
