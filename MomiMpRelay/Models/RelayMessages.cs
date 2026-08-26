@@ -12,6 +12,63 @@ enum RelayPacketKind : byte
 
 readonly record struct RelayPacket(RelayPacketKind Kind, byte[] Data);
 
+[JsonConverter(typeof(RelayControlJsonConverter))]
+sealed record RelayControl
+{
+    [JsonPropertyName("mode")]
+    public string Mode { get; init; } = "off";
+
+    [JsonPropertyName("ip")]
+    public string Ip { get; init; } = "127.0.0.1";
+
+    [JsonPropertyName("port")]
+    public int Port { get; init; }
+
+    [JsonPropertyName("seq")]
+    public long Seq { get; init; }
+}
+
+sealed class RelayControlJsonConverter : JsonConverter<RelayControl>
+{
+    public override RelayControl Read(ref Utf8JsonReader reader, Type typeToConvert,
+        JsonSerializerOptions options)
+    {
+        using var document = JsonDocument.ParseValue(ref reader);
+        var root = document.RootElement;
+
+        return new RelayControl
+        {
+            Mode = root.TryGetProperty("mode", out var mode)
+                ? mode.GetString() ?? "off"
+                : "off",
+            Ip = root.TryGetProperty("ip", out var ip)
+                ? ip.GetString() ?? "127.0.0.1"
+                : "127.0.0.1",
+            Port = ReadInt(root, "port"),
+            Seq = ReadLong(root, "seq"),
+        };
+    }
+
+    public override void Write(Utf8JsonWriter writer, RelayControl value,
+        JsonSerializerOptions options) => throw new NotSupportedException();
+
+    static int ReadInt(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var value)) return 0;
+        try { return value.GetInt32(); }
+        catch (FormatException) { return (int)value.GetDouble(); }
+        catch (InvalidOperationException) { return 0; }
+    }
+
+    static long ReadLong(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var value)) return 0;
+        try { return value.GetInt64(); }
+        catch (FormatException) { return (long)value.GetDouble(); }
+        catch (InvalidOperationException) { return 0; }
+    }
+}
+
 interface IRelayMessage
 {
     string Identifier { get; }

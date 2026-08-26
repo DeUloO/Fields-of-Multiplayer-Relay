@@ -5,6 +5,7 @@ using LiteNetLib;
 using LiteNetLib.Utils;
 using MomiMpRelay.Models;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 
@@ -364,35 +365,24 @@ static class Program
     static int Err(string msg) { Console.Error.WriteLine($"Error: {msg}"); PrintUsage(); return 1; }
 
 
-    readonly record struct Control(string Mode, string Ip, int Port, long Seq);
-
-    static async Task<Control?> ReadControlAsync(string path, CancellationToken ct)
+    static async Task<RelayControl?> ReadControlAsync(string path, CancellationToken ct)
     {
-        var raw = await ReadTextSharedAsync(path, ct);
-        if (raw is null) return null;
-        try
+        for (int attempt = 0; attempt < 6; attempt++)
         {
-            var obj = JsonNode.Parse(raw)?.AsObject();
-            if (obj is null) return null;
-            var mode = obj["mode"]?.GetValue<string>() ?? "off";
-            var ip   = obj["ip"]?.GetValue<string>()   ?? "127.0.0.1";
-            return new Control(mode, ip, ReadInt(obj["port"]), ReadLong(obj["seq"]));
+            try
+            {
+                await using var fs = new FileStream(
+                    path, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+                return await JsonSerializer.DeserializeAsync<RelayControl>(fs, cancellationToken: ct);
+            }
+            catch (FileNotFoundException)      { return null; }
+            catch (DirectoryNotFoundException) { return null; }
+            catch (JsonException)              { return null; }
+            catch (IOException)                { await Task.Delay(15, ct); }
+            catch (UnauthorizedAccessException){ await Task.Delay(15, ct); }
         }
-        catch { return null; }
-    }
-
-    static int ReadInt(JsonNode? n)
-    {
-        if (n is null) return 0;
-        try { return n.GetValue<int>(); }
-        catch { try { return (int)n.GetValue<double>(); } catch { return 0; } }
-    }
-
-    static long ReadLong(JsonNode? n)
-    {
-        if (n is null) return 0;
-        try { return n.GetValue<long>(); }
-        catch { try { return (long)n.GetValue<double>(); } catch { return 0; } }
+        return null;
     }
 
 
