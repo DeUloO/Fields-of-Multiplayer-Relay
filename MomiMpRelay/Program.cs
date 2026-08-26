@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Buffers.Binary;
 using System.Net;
 using LiteNetLib;
 using LiteNetLib.Utils;
+using MomiMpRelay.Models;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
@@ -13,27 +15,27 @@ sealed class ClientSession
     public readonly NetPeer Peer;
     public volatile string?       PlayerId;
 
-    public readonly Channel<string> Outbox = Channel.CreateBounded<string>(
+    public readonly Channel<IRelayMessage> Outbox = Channel.CreateBounded<IRelayMessage>(
         new BoundedChannelOptions(2) { FullMode = BoundedChannelFullMode.DropOldest });
 
-    public readonly Channel<string> Inbox = Channel.CreateUnbounded<string>();
+    public readonly Channel<RelayPacket> Inbox = Channel.CreateUnbounded<RelayPacket>();
 
     public readonly SemaphoreSlim WriteLock = new(1, 1);
 
     public ClientSession(NetPeer peer) { Peer = peer; }
 
-    public void Push(string json) => Outbox.Writer.TryWrite(json);
+    public void Push(IRelayMessage message) => Outbox.Writer.TryWrite(message);
 }
 
 sealed class RelayListener : INetEventListener
 {
     readonly Action<NetPeer, string> _connected;
-    readonly Action<NetPeer, byte[]> _received;
+    readonly Action<NetPeer, RelayPacket> _received;
     readonly Action<NetPeer> _disconnected;
 
     public RelayListener(
         Action<NetPeer, string> connected,
-        Action<NetPeer, byte[]> received,
+        Action<NetPeer, RelayPacket> received,
         Action<NetPeer> disconnected)
     {
         _connected = connected;
@@ -46,7 +48,12 @@ sealed class RelayListener : INetEventListener
     public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber,
         DeliveryMethod deliveryMethod)
     {
-        try { _received(peer, reader.GetRemainingBytes()); }
+        try
+        {
+            var data = reader.GetRemainingBytes();
+            if (data.Length > 0)
+                _received(peer, new RelayPacket((RelayPacketKind)data[0], data[1..]));
+        }
         finally { reader.Recycle(); }
     }
     public void OnNetworkError(IPEndPoint endPoint, System.Net.Sockets.SocketError socketError) { }
@@ -111,40 +118,39 @@ sealed class SnapshotReceiver
 {
     readonly string _mpDir;
     readonly Dictionary<string, FileStream> _open = new();
+    readonly Dictionary<string, int> _nextChunk = new();
+    readonly Dictionary<string, int> _expectedChunks = new();
 
     public SnapshotReceiver(string mpDir) { _mpDir = mpDir; }
 
-    public async Task HandleAsync(string kind, JsonObject msg, CancellationToken ct)
+    public async Task HandleAsync(IMpControlMessage message, CancellationToken ct)
     {
-        switch (kind)
+        switch (message)
         {
-            case "snap_begin":
+            case SnapshotBegin begin:
             {
-                var name = msg["name"]?.GetValue<string>();
-                if (name is null) break;
+                var name = begin.Name;
                 CloseOne(name);
                 var part = Path.Combine(_mpDir, name + ".part");
                 _open[name] = new FileStream(part, FileMode.Create, FileAccess.Write,
                     FileShare.None, 1 << 16, useAsync: true);
-                Console.WriteLine($"[CLIENT] Receiving {name} ({msg["bytes"]} bytes)…");
+                _nextChunk[name] = 0;
+                _expectedChunks[name] = begin.Chunks;
+                Console.WriteLine($"[CLIENT] Receiving {name} ({begin.Bytes} bytes)…");
                 break;
             }
-            case "snap_chunk":
+            case SnapshotEnd end:
             {
-                var name = msg["name"]?.GetValue<string>();
-                var data = msg["data"]?.GetValue<string>();
-                if (name is null || data is null) break;
-                if (_open.TryGetValue(name, out var fs))
+                var name = end.Name;
+                if (!_open.ContainsKey(name) ||
+                    !_nextChunk.TryGetValue(name, out var received) ||
+                    !_expectedChunks.TryGetValue(name, out var expected) ||
+                    received != expected)
                 {
-                    var bytes = Convert.FromBase64String(data);
-                    await fs.WriteAsync(bytes, ct);
+                    Console.WriteLine($"[CLIENT] Incomplete snapshot {name}; ignoring.");
+                    CloseOne(name);
+                    break;
                 }
-                break;
-            }
-            case "snap_end":
-            {
-                var name = msg["name"]?.GetValue<string>();
-                if (name is null) break;
                 CloseOne(name);
                 var part  = Path.Combine(_mpDir, name + ".part");
                 var final = Path.Combine(_mpDir, name);
@@ -152,7 +158,7 @@ sealed class SnapshotReceiver
                 catch (Exception ex) { Console.WriteLine($"[CLIENT] snap_end {name}: {ex.Message}"); }
                 break;
             }
-            case "snap_done":
+            case SnapshotDone:
             {
                 try
                 {
@@ -165,12 +171,31 @@ sealed class SnapshotReceiver
         }
     }
 
+    public async Task HandleChunkAsync(byte fileId, int sequence, byte[] bytes,
+        CancellationToken ct)
+    {
+        var name = fileId switch
+        {
+            1 => "world_snapshot.json",
+            2 => "world_farm_terrain.bin",
+            _ => null,
+        };
+        if (name is null || !_open.TryGetValue(name, out var fs) ||
+            !_nextChunk.TryGetValue(name, out var expected) || sequence != expected)
+            return;
+
+        await fs.WriteAsync(bytes, ct);
+        _nextChunk[name] = expected + 1;
+    }
+
     void CloseOne(string name)
     {
         if (_open.TryGetValue(name, out var fs))
         {
             try { fs.Dispose(); } catch { }
             _open.Remove(name);
+            _nextChunk.Remove(name);
+            _expectedChunks.Remove(name);
         }
     }
 }
@@ -181,10 +206,9 @@ static class Program
     const int DefaultPort = 7777;
     const int PollMs      = 50;    // poll out.json / control every 50 ms (~20 fps)
 
-    // Base64 chars per snapshot chunk. Multiple of 4 so each chunk is a valid
-    // standalone base64 segment and leaves room below a normal UDP MTU for the
-    // JSON envelope and LiteNetLib headers.
-    const int ChunkChars  = 900;
+    // Raw bytes per snapshot packet, leaving room below a normal UDP MTU for
+    // the packet kind, chunk metadata, JSON envelope, and LiteNetLib headers.
+    const int ChunkBytes  = 900;
 
     // How long the host waits for its game to produce a snapshot (write
     // mp_snap_ready) after being asked. The game only serializes when in-world.
@@ -440,17 +464,32 @@ static class Program
     }
 
 
-    static void Send(NetPeer peer, string json, CancellationToken ct)
+    static void Send(NetPeer peer, IRelayMessage message, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        peer.Send(Encoding.UTF8.GetBytes(json), DeliveryMethod.ReliableOrdered);
-        return;
+        var jsonBytes = Encoding.UTF8.GetBytes(message.ToJson().ToJsonString());
+        var packet = new byte[1 + jsonBytes.Length];
+        packet[0] = (byte)RelayPacketKind.Json;
+        jsonBytes.CopyTo(packet, 1);
+        peer.Send(packet, DeliveryMethod.ReliableOrdered);
     }
 
-    static async Task SendLockedAsync(ClientSession session, string json, CancellationToken ct)
+    static void SendSnapshotChunk(NetPeer peer, byte fileId, int sequence,
+        byte[] bytes, int offset, int count, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var packet = new byte[1 + 1 + sizeof(int) + count];
+        packet[0] = (byte)RelayPacketKind.SnapshotChunk;
+        packet[1] = fileId;
+        BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(2), sequence);
+        bytes.AsSpan(offset, count).CopyTo(packet.AsSpan(2 + sizeof(int)));
+        peer.Send(packet, DeliveryMethod.ReliableOrdered);
+    }
+
+    static async Task SendLockedAsync(ClientSession session, IRelayMessage message, CancellationToken ct)
     {
         await session.WriteLock.WaitAsync(ct);
-        try { Send(session.Peer, json, ct); }
+        try { Send(session.Peer, message, ct); }
         finally { session.WriteLock.Release(); }
     }
 
@@ -461,12 +500,6 @@ static class Program
             if (pid != excludePid)
                 arr.Add(state.DeepClone());
         return new JsonObject { ["players"] = arr }.ToJsonString();
-    }
-
-    static JsonObject? TryParseState(string json)
-    {
-        try   { return JsonNode.Parse(json)?.AsObject(); }
-        catch { return null; }
     }
 
     static async Task<string?> ReadTextSharedAsync(string path, CancellationToken ct)
@@ -547,7 +580,7 @@ static class Program
         {
             foreach (var (s, _) in sessions)
                 if (s.PlayerId is { } pid)
-                    s.Push(BuildRemoteJson(states, pid));
+                s.Push(new RelayStateUpdate(JsonNode.Parse(BuildRemoteJson(states, pid))!.AsObject()));
         }
 
         RelayListener? netListener = null;
@@ -563,11 +596,11 @@ static class Program
                     remotePath, writeLock, snapshotLock, () => myPid, PushToAll,
                     RefreshPeers, ct), ct);
             },
-            (peer, bytes) => //Received
+            (peer, packet) => //Received
             {
                 var session = sessions.Keys.FirstOrDefault(s => s.Peer == peer);
                 if (session is not null)
-                    session.Inbox.Writer.TryWrite(Encoding.UTF8.GetString(bytes));
+                    session.Inbox.Writer.TryWrite(packet);
             },
             peer => //Disconnected
             {
@@ -601,17 +634,13 @@ static class Program
                     if (raw != null && raw != lastRaw)
                     {
                         lastRaw = raw;
-                        var state = TryParseState(raw);
+                        var state = PlayerState.Parse(raw);
                         if (state != null)
                         {
-                            var pid = state["player_id"]?.GetValue<string>();
-                            if (pid != null)
-                            {
-                                myPid       = pid;
-                                states[pid] = state;
-                                await WriteRemoteAsync(remotePath, BuildRemoteJson(states, pid), writeLock, ct);
+                            myPid       = state.PlayerId;
+                            states[state.PlayerId] = state.Payload;
+                            await WriteRemoteAsync(remotePath, BuildRemoteJson(states, state.PlayerId), writeLock, ct);
                                 PushToAll();
-                            }
                         }
                     }
                 }
@@ -650,9 +679,13 @@ static class Program
         try
         {
             await foreach (var msg in session.Inbox.Reader.ReadAllAsync(ct))
-                await HostClientMessageAsync(session, session.Peer.Address.ToString(), msg,
-                    states, sessions, mpDir, hostRemotePath, writeLock, snapshotLock,
-                    getHostPid, pushToAll, refreshPeers, ct);
+            {
+                if (msg.Kind != RelayPacketKind.Json) continue;
+                await HostClientMessageAsync(session, session.Peer.Address.ToString(),
+                    Encoding.UTF8.GetString(msg.Data), states, sessions, mpDir,
+                    hostRemotePath, writeLock, snapshotLock, getHostPid, pushToAll,
+                    refreshPeers, ct);
+            }
         }
         catch (OperationCanceledException) { }
     }
@@ -673,30 +706,27 @@ static class Program
     {
         try
         {
-            var obj = TryParseState(msg);
-            if (obj is null) return;
-
-                // Control channel (world snapshot request, etc.)
-                if (obj["mp_msg"]?.GetValue<string>() is { } kind)
+            var control = RelayMessageParser.ParseControl(msg);
+            if (control is not null)
+            {
+                if (control is SnapshotRequest)
                 {
-                    if (kind == "snap_req")
-                    {
-                        Console.WriteLine($"[HOST] {addr} requested world snapshot");
-                        await HandleSnapshotRequestAsync(session, mpDir, snapshotLock, ct);
-                    }
-                    return;
+                    Console.WriteLine($"[HOST] {addr} requested world snapshot");
+                    await HandleSnapshotRequestAsync(session, mpDir, snapshotLock, ct);
+                }
+                return;
+            }
+
+            var state = PlayerState.Parse(msg);
+            if (state is null) return;
+
+                if (session.PlayerId != state.PlayerId)
+                {
+                    session.PlayerId = state.PlayerId;
+                    Console.WriteLine($"[HOST] {addr} → '{state.PlayerId}'");
                 }
 
-                var pid = obj["player_id"]?.GetValue<string>();
-                if (pid is null) return;
-
-                if (session.PlayerId != pid)
-                {
-                    session.PlayerId = pid;
-                    Console.WriteLine($"[HOST] {addr} → '{pid}'");
-                }
-
-                states[pid] = obj;
+                states[state.PlayerId] = state.Payload;
 
                 // Refresh host's own remote.json (sees this client's new state)
                 var hostPid = getHostPid();
@@ -759,46 +789,39 @@ static class Program
             await SendFileChunksAsync(session, "world_snapshot.json", jsonBytes, ct);
             if (binBytes is not null)
                 await SendFileChunksAsync(session, "world_farm_terrain.bin", binBytes, ct);
-            await SendLockedAsync(session, new JsonObject { ["mp_msg"] = "snap_done" }.ToJsonString(), ct);
+            await SendLockedAsync(session, new SnapshotDone(), ct);
             Console.WriteLine($"[HOST] snapshot sent to {session.PlayerId ?? "client"} " +
                               $"({jsonBytes.Length} + {(binBytes?.Length ?? 0)} bytes)");
         }
         catch (Exception ex) { Console.WriteLine($"[HOST] snapshot send failed: {ex.Message}"); }
     }
 
-    // Streams one file as base64 chunks: snap_begin, N x snap_chunk, snap_end.
+    // Streams one file as a begin envelope, raw binary chunks, and an end envelope.
     static async Task SendFileChunksAsync(
         ClientSession session, string name, byte[] bytes, CancellationToken ct)
     {
-        var b64   = Convert.ToBase64String(bytes);
-        int total = (b64.Length + ChunkChars - 1) / ChunkChars;
+        byte fileId = name == "world_snapshot.json" ? (byte)1 : (byte)2;
+        int total = (bytes.Length + ChunkBytes - 1) / ChunkBytes;
 
-        await SendLockedAsync(session, new JsonObject
-        {
-            ["mp_msg"] = "snap_begin",
-            ["name"]   = name,
-            ["chunks"] = total,
-            ["bytes"]  = bytes.Length,
-        }.ToJsonString(), ct);
+        await SendLockedAsync(session, new SnapshotBegin(name, total, bytes.Length), ct);
 
         for (int i = 0; i < total; i++)
         {
-            int off = i * ChunkChars;
-            var part = b64.Substring(off, Math.Min(ChunkChars, b64.Length - off));
-            await SendLockedAsync(session, new JsonObject
-            {
-                ["mp_msg"] = "snap_chunk",
-                ["name"]   = name,
-                ["seq"]    = i,
-                ["data"]   = part,
-            }.ToJsonString(), ct);
+            int off = i * ChunkBytes;
+            int count = Math.Min(ChunkBytes, bytes.Length - off);
+            await SendLockedSnapshotChunkAsync(session, fileId, i, bytes, off, count, ct);
         }
 
-        await SendLockedAsync(session, new JsonObject
-        {
-            ["mp_msg"] = "snap_end",
-            ["name"]   = name,
-        }.ToJsonString(), ct);
+        await SendLockedAsync(session, new SnapshotEnd(name), ct);
+    }
+
+    static async Task SendLockedSnapshotChunkAsync(
+        ClientSession session, byte fileId, int sequence, byte[] bytes,
+        int offset, int count, CancellationToken ct)
+    {
+        await session.WriteLock.WaitAsync(ct);
+        try { SendSnapshotChunk(session.Peer, fileId, sequence, bytes, offset, count, ct); }
+        finally { session.WriteLock.Release(); }
     }
 
     // Drains the per-session outbox and sends messages to the client. Uses the
@@ -826,12 +849,12 @@ static class Program
         {
             try
             {
-                var incoming = Channel.CreateUnbounded<string>();
+                var incoming = Channel.CreateUnbounded<RelayPacket>();
                 var connected = new TaskCompletionSource<NetPeer>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
                 var listener = new RelayListener(
                     (peer, _) => connected.TrySetResult(peer),
-                    (_, bytes) => incoming.Writer.TryWrite(Encoding.UTF8.GetString(bytes)),
+                    (_, packet) => incoming.Writer.TryWrite(packet),
                     peer =>
                     {
                         incoming.Writer.TryComplete();
@@ -865,7 +888,7 @@ static class Program
                 // network blip that reconnects mid-session won't wipe local play.
                     if (!requestedSnapshot)
                     {
-                        Send(peer, new JsonObject { ["mp_msg"] = "snap_req" }.ToJsonString(), linkCts.Token);
+                        Send(peer, new SnapshotRequest(), linkCts.Token);
                         requestedSnapshot = true;
                         Console.WriteLine("[CLIENT] Requested world snapshot from host.");
                     }
@@ -912,13 +935,14 @@ static class Program
                 if (File.Exists(resyncPath))
                 {
                     try { File.Delete(resyncPath); } catch { }
-                    Send(peer, new JsonObject { ["mp_msg"] = "snap_req" }.ToJsonString(), ct);
+                    Send(peer, new SnapshotRequest(), ct);
                     Console.WriteLine("[CLIENT] New day — re-requesting world snapshot.");
                 }
 
                 var raw = await ReadTextSharedAsync(outPath, ct);
-                if (raw != null)
-                    Send(peer, raw, ct);
+                var state = raw is null ? null : PlayerState.Parse(raw);
+                if (state is not null)
+                    Send(peer, state, ct);
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex)               { Console.WriteLine($"[CLIENT] Send: {ex.Message}"); return; }
@@ -927,7 +951,7 @@ static class Program
         }
     }
 
-    static async Task ClientReceiveLoop(ChannelReader<string> messages, string mpDir, string remotePath, CancellationToken ct)
+    static async Task ClientReceiveLoop(ChannelReader<RelayPacket> messages, string mpDir, string remotePath, CancellationToken ct)
     {
         var snap = new SnapshotReceiver(mpDir);
 
@@ -935,16 +959,30 @@ static class Program
         {
             try
             {
-                var msg = await messages.ReadAsync(ct);
+                var packet = await messages.ReadAsync(ct);
+                if (packet.Kind == RelayPacketKind.SnapshotChunk)
+                {
+                    if (packet.Data.Length >= 1 + sizeof(int))
+                    {
+                        var fileId = packet.Data[0];
+                        var sequence = BinaryPrimitives.ReadInt32LittleEndian(
+                            packet.Data.AsSpan(1));
+                        await snap.HandleChunkAsync(fileId, sequence,
+                            packet.Data[(1 + sizeof(int))..], ct);
+                    }
+                    continue;
+                }
+                if (packet.Kind != RelayPacketKind.Json) continue;
+                var msg = Encoding.UTF8.GetString(packet.Data);
 
                 // Cheap gate to only parse when it's actually a control message,
                 // so the remote.json path stays a plain file write.
                 if (msg.Contains("\"mp_msg\""))
                 {
-                    var obj = TryParseState(msg);
-                    if (obj?["mp_msg"]?.GetValue<string>() is { } kind)
+                    var control = RelayMessageParser.ParseControl(msg);
+                    if (control is not null)
                     {
-                        await snap.HandleAsync(kind, obj, ct);
+                        await snap.HandleAsync(control, ct);
                         continue;
                     }
                 }
