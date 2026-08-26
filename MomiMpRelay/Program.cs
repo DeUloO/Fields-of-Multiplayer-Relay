@@ -61,7 +61,8 @@ sealed class RelayListener : INetEventListener
     public void OnNetworkReceiveUnconnected(IPEndPoint remoteEndPoint, NetPacketReader reader,
         UnconnectedMessageType messageType) => reader.Recycle();
     public void OnNetworkLatencyUpdate(NetPeer peer, int latency) { }
-    public void OnConnectionRequest(ConnectionRequest request) => request.AcceptIfKey("momi-mp");
+    public void OnConnectionRequest(ConnectionRequest request) =>
+        request.AcceptIfKey(RelayProtocol.ConnectionKey);
 }
 
 sealed class StatusReporter
@@ -121,6 +122,8 @@ sealed class SnapshotReceiver
     readonly Dictionary<string, FileStream> _open = new();
     readonly Dictionary<string, int> _nextChunk = new();
     readonly Dictionary<string, int> _expectedChunks = new();
+    readonly Dictionary<string, int> _expectedBytes = new();
+    readonly Dictionary<string, int> _receivedBytes = new();
 
     public SnapshotReceiver(string mpDir) { _mpDir = mpDir; }
 
@@ -131,12 +134,22 @@ sealed class SnapshotReceiver
             case SnapshotBegin begin:
             {
                 var name = begin.Name;
+                if (!TryGetFileId(name, out _)
+                    || begin.Chunks < 0 || begin.Bytes < 0
+                    || (begin.Bytes == 0 && begin.Chunks != 0)
+                    || (begin.Bytes > 0 && begin.Chunks == 0))
+                {
+                    Console.WriteLine($"[CLIENT] Invalid snapshot metadata for {name}; ignoring.");
+                    break;
+                }
                 CloseOne(name);
                 var part = Path.Combine(_mpDir, name + ".part");
                 _open[name] = new FileStream(part, FileMode.Create, FileAccess.Write,
                     FileShare.None, 1 << 16, useAsync: true);
                 _nextChunk[name] = 0;
                 _expectedChunks[name] = begin.Chunks;
+                _expectedBytes[name] = begin.Bytes;
+                _receivedBytes[name] = 0;
                 Console.WriteLine($"[CLIENT] Receiving {name} ({begin.Bytes} bytes)…");
                 break;
             }
@@ -146,7 +159,10 @@ sealed class SnapshotReceiver
                 if (!_open.ContainsKey(name) ||
                     !_nextChunk.TryGetValue(name, out var received) ||
                     !_expectedChunks.TryGetValue(name, out var expected) ||
-                    received != expected)
+                    received != expected ||
+                    !_expectedBytes.TryGetValue(name, out var expectedBytes) ||
+                    !_receivedBytes.TryGetValue(name, out var receivedBytes) ||
+                    receivedBytes != expectedBytes)
                 {
                     Console.WriteLine($"[CLIENT] Incomplete snapshot {name}; ignoring.");
                     CloseOne(name);
@@ -182,11 +198,29 @@ sealed class SnapshotReceiver
             _ => null,
         };
         if (name is null || !_open.TryGetValue(name, out var fs) ||
-            !_nextChunk.TryGetValue(name, out var expected) || sequence != expected)
+            !_nextChunk.TryGetValue(name, out var expected) || sequence != expected ||
+            !_expectedBytes.TryGetValue(name, out var expectedBytes) ||
+            !_receivedBytes.TryGetValue(name, out var receivedBytes) ||
+            bytes.Length > expectedBytes - receivedBytes)
+        {
+            if (name is not null && _open.ContainsKey(name)) CloseOne(name);
             return;
+        }
 
         await fs.WriteAsync(bytes, ct);
         _nextChunk[name] = expected + 1;
+        _receivedBytes[name] = receivedBytes + bytes.Length;
+    }
+
+    static bool TryGetFileId(string name, out byte fileId)
+    {
+        fileId = name switch
+        {
+            "world_snapshot.json" => (byte)1,
+            "world_farm_terrain.bin" => (byte)2,
+            _ => (byte)0,
+        };
+        return fileId != 0;
     }
 
     void CloseOne(string name)
@@ -197,6 +231,8 @@ sealed class SnapshotReceiver
             _open.Remove(name);
             _nextChunk.Remove(name);
             _expectedChunks.Remove(name);
+            _expectedBytes.Remove(name);
+            _receivedBytes.Remove(name);
         }
     }
 }
@@ -607,17 +643,25 @@ static class Program
                 RefreshPeers();
             }));
         net.Start(port);
+        using var pollCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var pollTask = Task.Run(async () =>
+        {
+            while (!pollCts.IsCancellationRequested)
+            {
+                net.PollEvents();
+                try { await Task.Delay(10, pollCts.Token); }
+                catch (OperationCanceledException) { break; }
+            }
+        }, pollCts.Token);
         reporter.Set("listening", "host", 0);
         Console.WriteLine($"[HOST] Listening on :{port}");
         Console.WriteLine($"[HOST] Friends: set Join + your IP in their Multiplayer tab (port {port})");
 
         try
         {
-            // Poll own out.json
             string? lastRaw = null;
             while (!ct.IsCancellationRequested)
             {
-                net.PollEvents();
                 try
                 {
                     var raw = await ReadTextSharedAsync(outPath, ct);
@@ -643,6 +687,8 @@ static class Program
         catch (OperationCanceledException) { }
         finally
         {
+            await pollCts.CancelAsync();
+            try { await pollTask; } catch (OperationCanceledException) { }
             net.Stop();
             foreach (var (s, _) in sessions) s.Outbox.Writer.TryComplete();
             Console.WriteLine("[HOST] Stopped listening.");
@@ -859,7 +905,7 @@ static class Program
                     net.Start();
                     reporter.Set("connecting", "join", 0);
                     Console.WriteLine($"[CLIENT] Connecting to {host}:{port}…");
-                    net.Connect(host, port, "momi-mp");
+                    net.Connect(host, port, RelayProtocol.ConnectionKey);
                     poll = Task.Run(async () =>
                     {
                         while (!pollCts.IsCancellationRequested)

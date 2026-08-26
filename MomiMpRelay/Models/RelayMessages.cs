@@ -4,6 +4,11 @@ using System.Text.Json.Serialization;
 
 namespace MomiMpRelay.Models;
 
+static class RelayProtocol
+{
+    public const string ConnectionKey = "momi-mp";
+}
+
 enum RelayPacketKind : byte
 {
     Json = 1,
