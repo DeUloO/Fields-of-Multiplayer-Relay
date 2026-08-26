@@ -12,10 +12,11 @@ sealed class ClientSession
     public readonly Channel<IRelayMessage> Outbox = Channel.CreateBounded<IRelayMessage>(
         new BoundedChannelOptions(2) { FullMode = BoundedChannelFullMode.DropOldest });
 
-    public readonly Channel<RelayPacket> Inbox = Channel.CreateUnbounded<RelayPacket>();
+    public readonly Channel<RelayPacket> Inbox = Channel.CreateBounded<RelayPacket>(
+        new BoundedChannelOptions(256) { FullMode = BoundedChannelFullMode.Wait });
     public readonly SemaphoreSlim WriteLock = new(1, 1);
 
     public ClientSession(NetPeer peer) => Peer = peer;
 
-    public void Push(IRelayMessage message) => Outbox.Writer.TryWrite(message);
+    public bool Push(IRelayMessage message) => Outbox.Writer.TryWrite(message);
 }

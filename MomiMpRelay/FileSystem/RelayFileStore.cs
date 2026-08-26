@@ -45,7 +45,7 @@ public static class RelayFileStore
         return null;
     }
 
-    public static async Task WriteRemoteAsync(string remotePath, string json,
+    public static async Task<bool> WriteRemoteAsync(string remotePath, string json,
         SemaphoreSlim writeLock, CancellationToken ct)
     {
         var tmp = remotePath + ".tmp";
@@ -55,13 +55,38 @@ public static class RelayFileStore
             await File.WriteAllTextAsync(tmp, json, ct);
             for (int attempt = 0; attempt < 6; attempt++)
             {
-                try { File.Move(tmp, remotePath, overwrite: true); return; }
+                try { File.Move(tmp, remotePath, overwrite: true); return true; }
                 catch (IOException) when (attempt < 5) { await Task.Delay(15, ct); }
                 catch (UnauthorizedAccessException) when (attempt < 5) { await Task.Delay(15, ct); }
             }
-            try { await File.WriteAllTextAsync(remotePath, json, ct); } catch { }
+            try
+            {
+                await File.WriteAllTextAsync(remotePath, json, ct);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[RELAY] write remote.json fallback failed: {ex.Message}");
+                return false;
+            }
         }
-        catch (Exception ex) { Console.WriteLine($"[RELAY] write remote.json: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[RELAY] write remote.json failed: {ex.Message}");
+            return false;
+        }
         finally { writeLock.Release(); }
+    }
+
+    public static void CleanupTemporaryFiles(string directory)
+    {
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(directory, "*.tmp"))
+                try { File.Delete(path); } catch { }
+            foreach (var path in Directory.EnumerateFiles(directory, "*.part"))
+                try { File.Delete(path); } catch { }
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"[RELAY] temporary-file cleanup failed: {ex.Message}"); }
     }
 }

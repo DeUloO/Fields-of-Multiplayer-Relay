@@ -19,18 +19,20 @@ public sealed class RelayClient
     public async Task<int> RunAsync(CancellationToken ct)
     {
         bool requestedSnapshot = false;
+        var reconnectDelay = TimeSpan.FromSeconds(1);
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                var incoming = Channel.CreateUnbounded<RelayPacket>(); var connected = new TaskCompletionSource<NetPeer>(TaskCreationOptions.RunContinuationsAsynchronously);
-                var net = new NetManager(new RelayListener((peer, _) => connected.TrySetResult(peer), (_, packet) => incoming.Writer.TryWrite(packet), peer => { incoming.Writer.TryComplete(); connected.TrySetException(new IOException($"Connection to {peer.Address} was closed.")); }));
+                var incoming = Channel.CreateBounded<RelayPacket>(new BoundedChannelOptions(256) { FullMode = BoundedChannelFullMode.Wait }); var connected = new TaskCompletionSource<NetPeer>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var net = new NetManager(new RelayListener((peer, _) => connected.TrySetResult(peer), (peer, packet) => { if (!incoming.Writer.TryWrite(packet)) { Console.Error.WriteLine($"[CLIENT] Inbox full for {peer.Address}; disconnecting slow peer."); peer.Disconnect(); } }, (peer, disconnect) => { incoming.Writer.TryComplete(); connected.TrySetException(new IOException($"Connection to {peer.Address} was closed: {disconnect.Reason}.")); }));
                 using var pollCts = CancellationTokenSource.CreateLinkedTokenSource(ct); Task? poll = null;
                 try
                 {
                     net.Start(); _reporter.Set("connecting", "join", 0); Console.WriteLine($"[CLIENT] Connecting to {_host}:{_port}…"); net.Connect(_host, _port, RelayProtocol.ConnectionKey);
                     poll = Task.Run(async () => { while (!pollCts.IsCancellationRequested) { net.PollEvents(); try { await Task.Delay(10, pollCts.Token); } catch (OperationCanceledException) { } } }, pollCts.Token);
-                    var peer = await connected.Task.WaitAsync(ct); _reporter.Set("connected", "join", 1); Console.WriteLine("[CLIENT] Connected!");
+                    var peer = await connected.Task.WaitAsync(TimeSpan.FromSeconds(10), ct); _reporter.Set("connected", "join", 1); Console.WriteLine("[CLIENT] Connected!");
+                    reconnectDelay = TimeSpan.FromSeconds(1);
                     using var link = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     if (!requestedSnapshot) { RelayTransport.Send(peer, new SnapshotRequest(), link.Token); requestedSnapshot = true; }
                     var send = SendLoop(peer, link.Token); var receive = ReceiveLoop(incoming.Reader, link.Token); await Task.WhenAny(send, receive); await link.CancelAsync(); try { await Task.WhenAll(send, receive); } catch { }
@@ -39,7 +41,7 @@ public sealed class RelayClient
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex) { Console.WriteLine($"[CLIENT] {ex.Message}"); }
-            if (!ct.IsCancellationRequested) { _reporter.Set("connecting", "join", 0); try { File.Delete(_remotePath); } catch { } try { await Task.Delay(ReconnectDelayMs, ct); } catch (OperationCanceledException) { break; } }
+            if (!ct.IsCancellationRequested) { _reporter.Set("connecting", "join", 0, $"retrying in {reconnectDelay.TotalSeconds:0}s"); try { File.Delete(_remotePath); } catch { } try { await Task.Delay(reconnectDelay, ct); } catch (OperationCanceledException) { break; } reconnectDelay = TimeSpan.FromSeconds(Math.Min(reconnectDelay.TotalSeconds * 2, 30)); }
         }
         return 0;
     }

@@ -28,7 +28,8 @@ public sealed class RelayHost
         {
             foreach (var (session, _) in sessions)
                 if (session.PlayerId is { } pid)
-                    session.Push(new RelayStateUpdate(JsonNode.Parse(BuildRemoteJson(states, pid))!.AsObject()));
+                    if (!session.Push(new RelayStateUpdate(JsonNode.Parse(BuildRemoteJson(states, pid))!.AsObject())))
+                        Console.Error.WriteLine($"[HOST] Outbox full for {session.Peer.Address}; state update dropped.");
         }
         void Refresh() => _reporter.Set("listening", "host", sessions.Count);
         var net = new NetManager(new RelayListener(
@@ -39,13 +40,22 @@ public sealed class RelayHost
                 _ = Task.Run(() => WriteLoop(session, ct), ct);
                 _ = Task.Run(() => ReadLoop(session, ct), ct);
             },
-            (peer, packet) => sessions.Keys.FirstOrDefault(s => s.Peer == peer)?.Inbox.Writer.TryWrite(packet),
-            peer =>
+            (peer, packet) =>
+            {
+                var session = sessions.Keys.FirstOrDefault(s => s.Peer == peer);
+                if (session is not null && !session.Inbox.Writer.TryWrite(packet))
+                {
+                    Console.Error.WriteLine($"[HOST] Inbox full for {peer.Address}; disconnecting slow peer.");
+                    peer.Disconnect();
+                }
+            },
+            (peer, disconnect) =>
             {
                 var session = sessions.Keys.FirstOrDefault(s => s.Peer == peer); if (session is null) return;
                 session.Inbox.Writer.TryComplete();
                 if (session.PlayerId is { } pid) states.TryRemove(pid, out _);
                 sessions.TryRemove(session, out _); session.Outbox.Writer.TryComplete(); Refresh();
+                Console.WriteLine($"[HOST] Disconnected {peer.Address}: {disconnect.Reason}");
             }));
         net.Start(_port);
         using var pollCts = CancellationTokenSource.CreateLinkedTokenSource(ct);

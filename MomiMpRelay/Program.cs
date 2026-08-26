@@ -1,5 +1,6 @@
 using System.Text.Json;
 using MomiMpRelay.Configuration;
+using MomiMpRelay.FileSystem;
 using MomiMpRelay.Modes;
 using MomiMpRelay.Models;
 using MomiMpRelay.Status;
@@ -35,6 +36,7 @@ static class Program
             ? RelayDirectories.InstanceDir(instanceId)
             : RelayDirectories.ResolveMpDir());
         Directory.CreateDirectory(mpDir);
+        RelayFileStore.CleanupTemporaryFiles(mpDir);
         string outPath = Path.Combine(mpDir, "out.json");
         string remotePath = Path.Combine(mpDir, "remote.json");
 

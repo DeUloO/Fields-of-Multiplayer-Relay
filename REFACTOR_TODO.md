@@ -54,30 +54,30 @@ This is the persistent backlog for the remaining netcode and design work. The tr
 
 ## Reliability and Error Handling
 
-- [ ] Make `RelayFileStore.WriteRemoteAsync` report final write failure.
+- [x] Make `RelayFileStore.WriteRemoteAsync` report final write failure.
   - Return a success/failure result or throw after the fallback fails.
   - Do not report a failed write as successful.
 
-- [ ] Add connection timeout handling.
+- [x] Add connection timeout handling.
   - Bound the wait for the initial client connection.
   - Surface a useful status detail before reconnecting.
 
-- [ ] Preserve network failure details.
+- [x] Preserve network failure details.
   - Log `OnNetworkError` information.
   - Log relevant `DisconnectInfo` details.
   - Distinguish timeout, rejection, remote shutdown, and socket failure where possible.
 
-- [ ] Define channel backpressure policies explicitly.
+- [x] Define channel backpressure policies explicitly.
   - Keep lossy behavior only for replaceable state snapshots.
   - Prevent snapshot/control messages from being dropped.
   - Bound inbound traffic or separate state traffic from transfer traffic.
   - Add tests for overflow behavior.
 
-- [ ] Add cleanup for interrupted filesystem operations.
+- [x] Add cleanup for interrupted filesystem operations.
   - Remove stale `.tmp` and `.part` files at startup where appropriate.
   - Ensure cancellation and exceptions dispose snapshot streams.
 
-- [ ] Improve reconnect policy.
+- [x] Improve reconnect policy.
   - Add bounded exponential backoff and jitter.
   - Avoid retrying too aggressively when the host is unavailable.
 
