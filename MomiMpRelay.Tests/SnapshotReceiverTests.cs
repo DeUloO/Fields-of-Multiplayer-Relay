@@ -16,8 +16,8 @@ public sealed class SnapshotReceiverTests : IDisposable
         var content = new byte[] { 10, 20, 30 };
 
         await receiver.HandleAsync(new SnapshotBegin("world_farm_terrain.bin", 2, content.Length), CancellationToken.None);
-        await receiver.HandleChunkAsync(2, 0, content[..2], CancellationToken.None);
-        await receiver.HandleChunkAsync(2, 1, content[2..], CancellationToken.None);
+        await receiver.HandleChunkAsync(SnapshotFileId.Terrain, 0, content[..2], CancellationToken.None);
+        await receiver.HandleChunkAsync(SnapshotFileId.Terrain, 1, content[2..], CancellationToken.None);
         await receiver.HandleAsync(new SnapshotEnd("world_farm_terrain.bin"), CancellationToken.None);
 
         Assert.Equal(content, await File.ReadAllBytesAsync(Path.Combine(_directory, "world_farm_terrain.bin")));
@@ -30,7 +30,7 @@ public sealed class SnapshotReceiverTests : IDisposable
         var receiver = new SnapshotReceiver(_directory);
 
         await receiver.HandleAsync(new SnapshotBegin("world_snapshot.json", 2, 2), CancellationToken.None);
-        await receiver.HandleChunkAsync(1, 1, new byte[] { 2 }, CancellationToken.None);
+        await receiver.HandleChunkAsync(SnapshotFileId.World, 1, new byte[] { 2 }, CancellationToken.None);
         await receiver.HandleAsync(new SnapshotEnd("world_snapshot.json"), CancellationToken.None);
 
         Assert.False(File.Exists(Path.Combine(_directory, "world_snapshot.json")));
@@ -44,7 +44,7 @@ public sealed class SnapshotReceiverTests : IDisposable
         var terrain = new byte[] { 2, 3 };
 
         await receiver.HandleAsync(new SnapshotBegin("world_snapshot.json", 1, world.Length), CancellationToken.None);
-        await receiver.HandleChunkAsync(1, 0, world, CancellationToken.None);
+        await receiver.HandleChunkAsync(SnapshotFileId.World, 0, world, CancellationToken.None);
         await receiver.HandleAsync(new SnapshotEnd("world_snapshot.json"), CancellationToken.None);
         await receiver.HandleAsync(new SnapshotBegin("world_farm_terrain.bin", 1, terrain.Length), CancellationToken.None);
         await receiver.HandleAsync(new SnapshotDone(), CancellationToken.None);
@@ -52,10 +52,10 @@ public sealed class SnapshotReceiverTests : IDisposable
         Assert.False(File.Exists(Path.Combine(_directory, "mp_apply_world")));
 
         await receiver.HandleAsync(new SnapshotBegin("world_snapshot.json", 1, world.Length), CancellationToken.None);
-        await receiver.HandleChunkAsync(1, 0, world, CancellationToken.None);
+        await receiver.HandleChunkAsync(SnapshotFileId.World, 0, world, CancellationToken.None);
         await receiver.HandleAsync(new SnapshotEnd("world_snapshot.json"), CancellationToken.None);
         await receiver.HandleAsync(new SnapshotBegin("world_farm_terrain.bin", 1, terrain.Length), CancellationToken.None);
-        await receiver.HandleChunkAsync(2, 0, terrain, CancellationToken.None);
+        await receiver.HandleChunkAsync(SnapshotFileId.Terrain, 0, terrain, CancellationToken.None);
         await receiver.HandleAsync(new SnapshotEnd("world_farm_terrain.bin"), CancellationToken.None);
         await receiver.HandleAsync(new SnapshotDone(), CancellationToken.None);
 
@@ -71,7 +71,7 @@ public sealed class SnapshotReceiverTests : IDisposable
         cts.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            receiver.HandleChunkAsync(1, 0, new byte[] { 1 }, cts.Token));
+            receiver.HandleChunkAsync(SnapshotFileId.World, 0, new byte[] { 1 }, cts.Token));
 
         receiver.Dispose();
         Assert.False(File.Exists(Path.Combine(_directory, "world_snapshot.json.part")));

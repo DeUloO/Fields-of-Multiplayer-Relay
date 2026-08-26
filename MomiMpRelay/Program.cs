@@ -1,6 +1,7 @@
 using System.Text.Json;
 using MomiMpRelay.Configuration;
 using MomiMpRelay.FileSystem;
+using MomiMpRelay.Logging;
 using MomiMpRelay.Modes;
 using MomiMpRelay.Models;
 using MomiMpRelay.Status;
@@ -71,14 +72,14 @@ static class Program
             };
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { errored = true; exitCode = 1; Console.Error.WriteLine($"Fatal: {ex.Message}"); }
+        catch (Exception ex) { errored = true; exitCode = 1; RelayLogger.Error($"Fatal: {ex.Message}"); }
         finally
         {
             try { File.Delete(remotePath); } catch { }
             cts.Cancel();
             try { await statusTask; } catch { }
             reporter.TryDelete();
-            Console.WriteLine("[MOMI-MP] Stopped.");
+            RelayLogger.Info("[MOMI-MP] Stopped.");
         }
 
         if (noArgs && errored)

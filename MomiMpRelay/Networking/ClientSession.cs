@@ -4,7 +4,7 @@ using MomiMpRelay.Models;
 
 namespace MomiMpRelay.Networking;
 
-sealed class ClientSession
+sealed class ClientSession : IDisposable
 {
     public readonly NetPeer Peer;
     public volatile string? PlayerId;
@@ -19,4 +19,11 @@ sealed class ClientSession
     public ClientSession(NetPeer peer) => Peer = peer;
 
     public bool Push(IRelayMessage message) => Outbox.Writer.TryWrite(message);
+
+    public void Dispose()
+    {
+        Inbox.Writer.TryComplete();
+        Outbox.Writer.TryComplete();
+        WriteLock.Dispose();
+    }
 }

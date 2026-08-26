@@ -27,7 +27,7 @@ public sealed class RelayPacketCodecTests
     {
         var source = new byte[] { 1, 2, 3, 255 };
 
-        var encoded = RelayPacketCodec.EncodeSnapshotChunk(2, 17, source);
+        var encoded = RelayPacketCodec.EncodeSnapshotChunk(SnapshotFileId.Terrain, 17, source);
 
         Assert.True(RelayPacketCodec.TryDecode(encoded, out var packet));
         Assert.Equal(RelayPacketKind.SnapshotChunk, packet.Kind);
@@ -69,7 +69,7 @@ public sealed class RelayPacketCodecTests
             new byte[] { 2, 17, 0, 0, 0, 7, 8 });
 
         Assert.True(RelayPacketCodec.TryDecodeSnapshotChunk(packet, out var chunk));
-        Assert.Equal(2, chunk.FileId);
+        Assert.Equal(SnapshotFileId.Terrain, chunk.FileId);
         Assert.Equal(17, chunk.Sequence);
         Assert.Equal(new byte[] { 7, 8 }, chunk.Data);
     }
@@ -79,7 +79,7 @@ public sealed class RelayPacketCodecTests
     [InlineData(int.MaxValue)]
     public void SnapshotSequenceBoundariesRoundTrip(int sequence)
     {
-        var encoded = RelayPacketCodec.EncodeSnapshotChunk(1, sequence, new byte[] { 42 });
+        var encoded = RelayPacketCodec.EncodeSnapshotChunk(SnapshotFileId.World, sequence, new byte[] { 42 });
 
         Assert.True(RelayPacketCodec.TryDecode(encoded, out var packet));
         Assert.True(RelayPacketCodec.TryDecodeSnapshotChunk(packet, out var chunk));
@@ -91,7 +91,7 @@ public sealed class RelayPacketCodecTests
     {
         var source = Enumerable.Range(0, 20_000).Select(value => (byte)(value % 251)).ToArray();
 
-        var encoded = RelayPacketCodec.EncodeSnapshotChunk(2, 3, source);
+        var encoded = RelayPacketCodec.EncodeSnapshotChunk(SnapshotFileId.Terrain, 3, source);
 
         Assert.True(RelayPacketCodec.TryDecode(encoded, out var packet));
         Assert.True(RelayPacketCodec.TryDecodeSnapshotChunk(packet, out var chunk));

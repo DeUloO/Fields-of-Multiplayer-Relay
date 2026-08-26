@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using LiteNetLib;
 using MomiMpRelay.FileSystem;
+using MomiMpRelay.Logging;
 using MomiMpRelay.Models;
 using MomiMpRelay.Networking;
 using MomiMpRelay.Status;
@@ -29,14 +30,14 @@ public sealed class RelayHost
             foreach (var (session, _) in sessions)
                 if (session.PlayerId is { } pid)
                     if (!session.Push(new RelayStateUpdate(JsonNode.Parse(BuildRemoteJson(states, pid))!.AsObject())))
-                        Console.Error.WriteLine($"[HOST] Outbox full for {session.Peer.Address}; state update dropped.");
+                        RelayLogger.Error($"[HOST] Outbox full for {session.Peer.Address}; state update dropped.");
         }
         void Refresh() => _reporter.Set("listening", "host", sessions.Count);
         var net = new NetManager(new RelayListener(
             (peer, address) =>
             {
                 var session = new ClientSession(peer); sessions.TryAdd(session, 0); Refresh();
-                Console.WriteLine($"[HOST] + {address}");
+                RelayLogger.Info($"[HOST] + {address}");
                 _ = Task.Run(() => WriteLoop(session, ct), ct);
                 _ = Task.Run(() => ReadLoop(session, ct), ct);
             },
@@ -45,7 +46,7 @@ public sealed class RelayHost
                 var session = sessions.Keys.FirstOrDefault(s => s.Peer == peer);
                 if (session is not null && !session.Inbox.Writer.TryWrite(packet))
                 {
-                    Console.Error.WriteLine($"[HOST] Inbox full for {peer.Address}; disconnecting slow peer.");
+                    RelayLogger.Error($"[HOST] Inbox full for {peer.Address}; disconnecting slow peer.");
                     peer.Disconnect();
                 }
             },
@@ -54,13 +55,13 @@ public sealed class RelayHost
                 var session = sessions.Keys.FirstOrDefault(s => s.Peer == peer); if (session is null) return;
                 session.Inbox.Writer.TryComplete();
                 if (session.PlayerId is { } pid) states.TryRemove(pid, out _);
-                sessions.TryRemove(session, out _); session.Outbox.Writer.TryComplete(); Refresh();
-                Console.WriteLine($"[HOST] Disconnected {peer.Address}: {disconnect.Reason}");
+                sessions.TryRemove(session, out _); session.Dispose(); Refresh();
+                RelayLogger.Info($"[HOST] Disconnected {peer.Address}: {disconnect.Reason}");
             }));
         net.Start(_port);
         using var pollCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var pollTask = Task.Run(async () => { while (!pollCts.IsCancellationRequested) { net.PollEvents(); try { await Task.Delay(10, pollCts.Token); } catch (OperationCanceledException) { } } }, pollCts.Token);
-        _reporter.Set("listening", "host", 0); Console.WriteLine($"[HOST] Listening on :{_port}");
+        _reporter.Set("listening", "host", 0); RelayLogger.Info($"[HOST] Listening on :{_port}");
         try
         {
             string? last = null;
@@ -76,7 +77,7 @@ public sealed class RelayHost
             }
         }
         catch (OperationCanceledException) { }
-        finally { await pollCts.CancelAsync(); try { await pollTask; } catch (OperationCanceledException) { } net.Stop(); foreach (var (s, _) in sessions) s.Outbox.Writer.TryComplete(); }
+        finally { await pollCts.CancelAsync(); try { await pollTask; } catch (OperationCanceledException) { } net.Stop(); foreach (var (s, _) in sessions) s.Dispose(); }
         return 0;
 
         async Task ReadLoop(ClientSession session, CancellationToken token)
@@ -115,7 +116,7 @@ public sealed class RelayHost
         }
         async Task SendFile(ClientSession session, string name, byte[] bytes, CancellationToken token)
         {
-            var id = name == "world_snapshot.json" ? (byte)1 : (byte)2; var total = (bytes.Length + ChunkBytes - 1) / ChunkBytes;
+            var id = name == "world_snapshot.json" ? SnapshotFileId.World : SnapshotFileId.Terrain; var total = (bytes.Length + ChunkBytes - 1) / ChunkBytes;
             await RelayTransport.SendLockedAsync(session, new SnapshotBegin(name, total, bytes.Length), token);
             for (var i = 0; i < total; i++) { var offset = i * ChunkBytes; await RelayTransport.SendLockedSnapshotChunkAsync(session, id, i, bytes, offset, Math.Min(ChunkBytes, bytes.Length - offset), token); }
             await RelayTransport.SendLockedAsync(session, new SnapshotEnd(name), token);

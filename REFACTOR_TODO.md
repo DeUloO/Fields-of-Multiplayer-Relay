@@ -95,8 +95,8 @@ This is the persistent backlog for the remaining netcode and design work. The tr
 
 ## Lower Priority
 
-- [ ] Dispose owned `SemaphoreSlim`, `NetManager`, and task resources consistently.
-- [ ] Centralize or synchronize console logging if interleaved output becomes a problem.
+- [x] Dispose owned `SemaphoreSlim`, `NetManager`, and task resources consistently.
+- [x] Centralize or synchronize console logging if interleaved output becomes a problem.
 - [ ] Add protocol version or capability negotiation once message evolution requires it.
-- [ ] Replace magic snapshot file IDs with a typed file identifier enum shared by sender and receiver.
+- [x] Replace magic snapshot file IDs with a typed file identifier enum shared by sender and receiver.
 - [ ] Consider reducing snapshot packet overhead or measuring transfer performance with realistic world sizes.

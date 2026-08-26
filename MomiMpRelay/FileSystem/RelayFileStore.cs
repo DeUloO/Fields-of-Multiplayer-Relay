@@ -1,6 +1,5 @@
 using System.Text;
-using MomiMpRelay.Models;
-using System.Text.Json.Nodes;
+using MomiMpRelay.Logging;
 
 namespace MomiMpRelay.FileSystem;
 
@@ -66,13 +65,13 @@ public static class RelayFileStore
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[RELAY] write remote.json fallback failed: {ex.Message}");
+                RelayLogger.Error($"[RELAY] write remote.json fallback failed: {ex.Message}");
                 return false;
             }
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[RELAY] write remote.json failed: {ex.Message}");
+            RelayLogger.Error($"[RELAY] write remote.json failed: {ex.Message}");
             return false;
         }
         finally { writeLock.Release(); }
@@ -87,6 +86,6 @@ public static class RelayFileStore
             foreach (var path in Directory.EnumerateFiles(directory, "*.part"))
                 try { File.Delete(path); } catch { }
         }
-        catch (Exception ex) { Console.Error.WriteLine($"[RELAY] temporary-file cleanup failed: {ex.Message}"); }
+        catch (Exception ex) { RelayLogger.Error($"[RELAY] temporary-file cleanup failed: {ex.Message}"); }
     }
 }

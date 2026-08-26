@@ -17,7 +17,13 @@ public enum RelayPacketKind : byte
 
 public readonly record struct RelayPacket(RelayPacketKind Kind, byte[] Data);
 
-public readonly record struct SnapshotChunk(byte FileId, int Sequence, byte[] Data);
+public enum SnapshotFileId : byte
+{
+    World = 1,
+    Terrain = 2,
+}
+
+public readonly record struct SnapshotChunk(SnapshotFileId FileId, int Sequence, byte[] Data);
 
 [JsonConverter(typeof(RelayControlJsonConverter))]
 public sealed record RelayControl

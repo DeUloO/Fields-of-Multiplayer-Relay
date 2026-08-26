@@ -1,6 +1,7 @@
 namespace MomiMpRelay.Snapshots;
 
 using MomiMpRelay.Models;
+using MomiMpRelay.Logging;
 
 public sealed class SnapshotReceiver : IDisposable
 {
@@ -28,7 +29,7 @@ public sealed class SnapshotReceiver : IDisposable
                     || (begin.Bytes == 0 && begin.Chunks != 0)
                     || (begin.Bytes > 0 && begin.Chunks == 0))
                 {
-                    Console.WriteLine($"[CLIENT] Invalid snapshot metadata for {name}; ignoring.");
+                    RelayLogger.Error($"[CLIENT] Invalid snapshot metadata for {name}; ignoring.");
                     break;
                 }
                 CloseOne(name);
@@ -45,7 +46,7 @@ public sealed class SnapshotReceiver : IDisposable
                 _expectedBytes[name] = begin.Bytes;
                 _receivedBytes[name] = 0;
                 _activeFiles.Add(name);
-                Console.WriteLine($"[CLIENT] Receiving {name} ({begin.Bytes} bytes)…");
+                RelayLogger.Info($"[CLIENT] Receiving {name} ({begin.Bytes} bytes)…");
                 break;
             }
             case SnapshotEnd end:
@@ -59,7 +60,7 @@ public sealed class SnapshotReceiver : IDisposable
                     !_receivedBytes.TryGetValue(name, out var receivedBytes) ||
                     receivedBytes != expectedBytes)
                 {
-                    Console.WriteLine($"[CLIENT] Incomplete snapshot {name}; ignoring.");
+                    RelayLogger.Error($"[CLIENT] Incomplete snapshot {name}; ignoring.");
                     CloseOne(name, deletePart: true);
                     break;
                 }
@@ -69,36 +70,36 @@ public sealed class SnapshotReceiver : IDisposable
                 var part = Path.Combine(_mpDir, name + ".part");
                 var final = Path.Combine(_mpDir, name);
                 try { if (File.Exists(part)) File.Move(part, final, overwrite: true); }
-                catch (Exception ex) { Console.WriteLine($"[CLIENT] snap_end {name}: {ex.Message}"); }
+                catch (Exception ex) { RelayLogger.Error($"[CLIENT] snap_end {name}: {ex.Message}"); }
                 break;
             }
             case SnapshotDone:
                 if (!_snapshotInProgress || _activeFiles.Count != 0 ||
                     !_completedFiles.Contains("world_snapshot.json"))
                 {
-                    Console.WriteLine("[CLIENT] Snapshot completion rejected; files are incomplete.");
+                    RelayLogger.Error("[CLIENT] Snapshot completion rejected; files are incomplete.");
                     CleanupSnapshot(deleteParts: true);
                     break;
                 }
                 try
                 {
                     await File.WriteAllTextAsync(Path.Combine(_mpDir, "mp_apply_world"), "", ct);
-                    Console.WriteLine("[CLIENT] World snapshot complete → apply requested.");
+                    RelayLogger.Info("[CLIENT] World snapshot complete → apply requested.");
                     _snapshotInProgress = false;
                     _completedFiles.Clear();
                 }
-                catch (Exception ex) { Console.WriteLine($"[CLIENT] snap_done: {ex.Message}"); }
+                catch (Exception ex) { RelayLogger.Error($"[CLIENT] snap_done: {ex.Message}"); }
                 break;
         }
     }
 
-    public async Task HandleChunkAsync(byte fileId, int sequence, byte[] bytes,
+    public async Task HandleChunkAsync(SnapshotFileId fileId, int sequence, byte[] bytes,
         CancellationToken ct)
     {
         var name = fileId switch
         {
-            1 => "world_snapshot.json",
-            2 => "world_farm_terrain.bin",
+            SnapshotFileId.World => "world_snapshot.json",
+            SnapshotFileId.Terrain => "world_farm_terrain.bin",
             _ => null,
         };
         if (name is null || !_open.TryGetValue(name, out var fs) ||
@@ -116,13 +117,13 @@ public sealed class SnapshotReceiver : IDisposable
         _receivedBytes[name] = receivedBytes + bytes.Length;
     }
 
-    static bool TryGetFileId(string name, out byte fileId)
+    static bool TryGetFileId(string name, out SnapshotFileId fileId)
     {
         fileId = name switch
         {
-            "world_snapshot.json" => (byte)1,
-            "world_farm_terrain.bin" => (byte)2,
-            _ => (byte)0,
+            "world_snapshot.json" => SnapshotFileId.World,
+            "world_farm_terrain.bin" => SnapshotFileId.Terrain,
+            _ => (SnapshotFileId)0,
         };
         return fileId != 0;
     }

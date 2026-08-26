@@ -11,7 +11,7 @@ static class RelayTransport
         peer.Send(RelayPacketCodec.EncodeJson(message), DeliveryMethod.ReliableOrdered);
     }
 
-    public static void SendSnapshotChunk(NetPeer peer, byte fileId, int sequence,
+    public static void SendSnapshotChunk(NetPeer peer, SnapshotFileId fileId, int sequence,
         byte[] bytes, int offset, int count, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -28,7 +28,7 @@ static class RelayTransport
     }
 
     public static async Task SendLockedSnapshotChunkAsync(ClientSession session,
-        byte fileId, int sequence, byte[] bytes, int offset, int count,
+        SnapshotFileId fileId, int sequence, byte[] bytes, int offset, int count,
         CancellationToken ct)
     {
         await session.WriteLock.WaitAsync(ct);

@@ -2,6 +2,7 @@ using System.Text;
 using System.Threading.Channels;
 using LiteNetLib;
 using MomiMpRelay.FileSystem;
+using MomiMpRelay.Logging;
 using MomiMpRelay.Models;
 using MomiMpRelay.Networking;
 using MomiMpRelay.Snapshots;
@@ -25,13 +26,13 @@ public sealed class RelayClient
             try
             {
                 var incoming = Channel.CreateBounded<RelayPacket>(new BoundedChannelOptions(256) { FullMode = BoundedChannelFullMode.Wait }); var connected = new TaskCompletionSource<NetPeer>(TaskCreationOptions.RunContinuationsAsynchronously);
-                var net = new NetManager(new RelayListener((peer, _) => connected.TrySetResult(peer), (peer, packet) => { if (!incoming.Writer.TryWrite(packet)) { Console.Error.WriteLine($"[CLIENT] Inbox full for {peer.Address}; disconnecting slow peer."); peer.Disconnect(); } }, (peer, disconnect) => { incoming.Writer.TryComplete(); connected.TrySetException(new IOException($"Connection to {peer.Address} was closed: {disconnect.Reason}.")); }));
+                var net = new NetManager(new RelayListener((peer, _) => connected.TrySetResult(peer), (peer, packet) => { if (!incoming.Writer.TryWrite(packet)) { RelayLogger.Error($"[CLIENT] Inbox full for {peer.Address}; disconnecting slow peer."); peer.Disconnect(); } }, (peer, disconnect) => { incoming.Writer.TryComplete(); connected.TrySetException(new IOException($"Connection to {peer.Address} was closed: {disconnect.Reason}.")); }));
                 using var pollCts = CancellationTokenSource.CreateLinkedTokenSource(ct); Task? poll = null;
                 try
                 {
-                    net.Start(); _reporter.Set("connecting", "join", 0); Console.WriteLine($"[CLIENT] Connecting to {_host}:{_port}…"); net.Connect(_host, _port, RelayProtocol.ConnectionKey);
+                    net.Start(); _reporter.Set("connecting", "join", 0); RelayLogger.Info($"[CLIENT] Connecting to {_host}:{_port}…"); net.Connect(_host, _port, RelayProtocol.ConnectionKey);
                     poll = Task.Run(async () => { while (!pollCts.IsCancellationRequested) { net.PollEvents(); try { await Task.Delay(10, pollCts.Token); } catch (OperationCanceledException) { } } }, pollCts.Token);
-                    var peer = await connected.Task.WaitAsync(TimeSpan.FromSeconds(10), ct); _reporter.Set("connected", "join", 1); Console.WriteLine("[CLIENT] Connected!");
+                    var peer = await connected.Task.WaitAsync(TimeSpan.FromSeconds(10), ct); _reporter.Set("connected", "join", 1); RelayLogger.Info("[CLIENT] Connected!");
                     reconnectDelay = TimeSpan.FromSeconds(1);
                     using var link = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     if (!requestedSnapshot) { RelayTransport.Send(peer, new SnapshotRequest(), link.Token); requestedSnapshot = true; }
@@ -40,8 +41,8 @@ public sealed class RelayClient
                 finally { await pollCts.CancelAsync(); net.Stop(); if (poll is not null) try { await poll; } catch (OperationCanceledException) { } }
             }
             catch (OperationCanceledException) { break; }
-            catch (Exception ex) { Console.WriteLine($"[CLIENT] {ex.Message}"); }
-            if (!ct.IsCancellationRequested) { _reporter.Set("connecting", "join", 0, $"retrying in {reconnectDelay.TotalSeconds:0}s"); try { File.Delete(_remotePath); } catch { } Console.WriteLine($"[CLIENT] Reconnecting in {reconnectDelay.TotalSeconds:0}s…"); try { await Task.Delay(reconnectDelay, ct); } catch (OperationCanceledException) { break; } reconnectDelay = TimeSpan.FromSeconds(Math.Min(reconnectDelay.TotalSeconds * 2, 30)); }
+            catch (Exception ex) { RelayLogger.Error($"[CLIENT] {ex.Message}"); }
+            if (!ct.IsCancellationRequested) { _reporter.Set("connecting", "join", 0, $"retrying in {reconnectDelay.TotalSeconds:0}s"); try { File.Delete(_remotePath); } catch { } RelayLogger.Info($"[CLIENT] Reconnecting in {reconnectDelay.TotalSeconds:0}s…"); try { await Task.Delay(reconnectDelay, ct); } catch (OperationCanceledException) { break; } reconnectDelay = TimeSpan.FromSeconds(Math.Min(reconnectDelay.TotalSeconds * 2, 30)); }
         }
         return 0;
     }
@@ -57,7 +58,7 @@ public sealed class RelayClient
                 await Task.Delay(PollMs, ct);
             }
             catch (OperationCanceledException) { return; }
-            catch (Exception ex) { Console.WriteLine($"[CLIENT] Send: {ex.Message}"); return; }
+            catch (Exception ex) { RelayLogger.Error($"[CLIENT] Send: {ex.Message}"); return; }
         }
     }
 

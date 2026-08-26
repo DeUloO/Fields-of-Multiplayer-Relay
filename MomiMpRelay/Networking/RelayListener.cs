@@ -1,5 +1,6 @@
 using System.Net;
 using LiteNetLib;
+using MomiMpRelay.Logging;
 using MomiMpRelay.Models;
 
 namespace MomiMpRelay.Networking;
@@ -21,7 +22,7 @@ sealed class RelayListener : INetEventListener
         _received = received;
         _disconnected = disconnected;
         _networkError = networkError ?? ((endpoint, error) =>
-            Console.Error.WriteLine($"[NET] {endpoint}: {error}"));
+            RelayLogger.Error($"[NET] {endpoint}: {error}"));
     }
 
     public void OnPeerConnected(NetPeer peer) => _connected(peer, peer.Address.ToString());

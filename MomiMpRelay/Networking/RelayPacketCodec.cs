@@ -15,12 +15,12 @@ public static class RelayPacketCodec
         return packet;
     }
 
-    public static byte[] EncodeSnapshotChunk(byte fileId, int sequence,
+    public static byte[] EncodeSnapshotChunk(SnapshotFileId fileId, int sequence,
         ReadOnlySpan<byte> bytes)
     {
         var packet = new byte[1 + 1 + sizeof(int) + bytes.Length];
         packet[0] = (byte)RelayPacketKind.SnapshotChunk;
-        packet[1] = fileId;
+        packet[1] = (byte)fileId;
         BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(2), sequence);
         bytes.CopyTo(packet.AsSpan(2 + sizeof(int)));
         return packet;
@@ -65,11 +65,11 @@ public static class RelayPacketCodec
             return false;
         }
 
-        result = new SnapshotChunk(packet.Data[0],
+        result = new SnapshotChunk((SnapshotFileId)packet.Data[0],
             BinaryPrimitives.ReadInt32LittleEndian(packet.Data.AsSpan(1)),
             packet.Data[(1 + sizeof(int))..]);
         return true;
     }
 
-    static bool IsKnownFileId(byte fileId) => fileId is 1 or 2;
+    static bool IsKnownFileId(byte fileId) => Enum.IsDefined((SnapshotFileId)fileId);
 }
