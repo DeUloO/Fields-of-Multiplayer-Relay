@@ -2,7 +2,7 @@ namespace MomiMpRelay.Snapshots;
 
 using MomiMpRelay.Models;
 
-public sealed class SnapshotReceiver
+public sealed class SnapshotReceiver : IDisposable
 {
     readonly string _mpDir;
     readonly Dictionary<string, FileStream> _open = new();
@@ -10,6 +10,9 @@ public sealed class SnapshotReceiver
     readonly Dictionary<string, int> _expectedChunks = new();
     readonly Dictionary<string, int> _expectedBytes = new();
     readonly Dictionary<string, int> _receivedBytes = new();
+    readonly HashSet<string> _activeFiles = new();
+    readonly HashSet<string> _completedFiles = new();
+    bool _snapshotInProgress;
 
     public SnapshotReceiver(string mpDir) => _mpDir = mpDir;
 
@@ -29,6 +32,11 @@ public sealed class SnapshotReceiver
                     break;
                 }
                 CloseOne(name);
+                if (!_snapshotInProgress)
+                {
+                    _completedFiles.Clear();
+                    _snapshotInProgress = true;
+                }
                 var part = Path.Combine(_mpDir, name + ".part");
                 _open[name] = new FileStream(part, FileMode.Create, FileAccess.Write,
                     FileShare.None, 1 << 16, useAsync: true);
@@ -36,6 +44,7 @@ public sealed class SnapshotReceiver
                 _expectedChunks[name] = begin.Chunks;
                 _expectedBytes[name] = begin.Bytes;
                 _receivedBytes[name] = 0;
+                _activeFiles.Add(name);
                 Console.WriteLine($"[CLIENT] Receiving {name} ({begin.Bytes} bytes)…");
                 break;
             }
@@ -51,10 +60,12 @@ public sealed class SnapshotReceiver
                     receivedBytes != expectedBytes)
                 {
                     Console.WriteLine($"[CLIENT] Incomplete snapshot {name}; ignoring.");
-                    CloseOne(name);
+                    CloseOne(name, deletePart: true);
                     break;
                 }
                 CloseOne(name);
+                _activeFiles.Remove(name);
+                _completedFiles.Add(name);
                 var part = Path.Combine(_mpDir, name + ".part");
                 var final = Path.Combine(_mpDir, name);
                 try { if (File.Exists(part)) File.Move(part, final, overwrite: true); }
@@ -62,10 +73,19 @@ public sealed class SnapshotReceiver
                 break;
             }
             case SnapshotDone:
+                if (!_snapshotInProgress || _activeFiles.Count != 0 ||
+                    !_completedFiles.Contains("world_snapshot.json"))
+                {
+                    Console.WriteLine("[CLIENT] Snapshot completion rejected; files are incomplete.");
+                    CleanupSnapshot(deleteParts: true);
+                    break;
+                }
                 try
                 {
                     await File.WriteAllTextAsync(Path.Combine(_mpDir, "mp_apply_world"), "", ct);
                     Console.WriteLine("[CLIENT] World snapshot complete → apply requested.");
+                    _snapshotInProgress = false;
+                    _completedFiles.Clear();
                 }
                 catch (Exception ex) { Console.WriteLine($"[CLIENT] snap_done: {ex.Message}"); }
                 break;
@@ -87,7 +107,7 @@ public sealed class SnapshotReceiver
             !_receivedBytes.TryGetValue(name, out var receivedBytes) ||
             bytes.Length > expectedBytes - receivedBytes)
         {
-            if (name is not null && _open.ContainsKey(name)) CloseOne(name);
+            if (name is not null && _open.ContainsKey(name)) CloseOne(name, deletePart: true);
             return;
         }
 
@@ -107,7 +127,7 @@ public sealed class SnapshotReceiver
         return fileId != 0;
     }
 
-    void CloseOne(string name)
+    void CloseOne(string name, bool deletePart = false)
     {
         if (_open.TryGetValue(name, out var fs))
         {
@@ -117,6 +137,21 @@ public sealed class SnapshotReceiver
             _expectedChunks.Remove(name);
             _expectedBytes.Remove(name);
             _receivedBytes.Remove(name);
+            _activeFiles.Remove(name);
+            if (deletePart)
+            {
+                try { File.Delete(Path.Combine(_mpDir, name + ".part")); } catch { }
+            }
         }
     }
+
+    void CleanupSnapshot(bool deleteParts)
+    {
+        foreach (var name in _open.Keys.ToArray()) CloseOne(name, deleteParts);
+        _activeFiles.Clear();
+        _completedFiles.Clear();
+        _snapshotInProgress = false;
+    }
+
+    public void Dispose() => CleanupSnapshot(deleteParts: true);
 }

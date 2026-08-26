@@ -16,7 +16,7 @@ This is the persistent backlog for the remaining netcode and design work. The tr
   - Test missing, duplicate, out-of-order, truncated, and oversized chunks.
   - Test cancellation during transfer.
 
-- [ ] Make snapshot completion transfer-aware.
+- [x] Make snapshot completion transfer-aware.
   - Track completion for the complete snapshot operation, not only individual files.
   - Create `mp_apply_world` only after every required file has completed successfully.
   - Clean up open streams and `.part` files on cancellation, disconnect, or invalid input.

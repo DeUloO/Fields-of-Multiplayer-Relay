@@ -36,6 +36,32 @@ public sealed class SnapshotReceiverTests : IDisposable
         Assert.False(File.Exists(Path.Combine(_directory, "world_snapshot.json")));
     }
 
+    [Fact]
+    public async Task SnapshotDoneWaitsForEveryStartedFile()
+    {
+        var receiver = new SnapshotReceiver(_directory);
+        var world = new byte[] { 1 };
+        var terrain = new byte[] { 2, 3 };
+
+        await receiver.HandleAsync(new SnapshotBegin("world_snapshot.json", 1, world.Length), CancellationToken.None);
+        await receiver.HandleChunkAsync(1, 0, world, CancellationToken.None);
+        await receiver.HandleAsync(new SnapshotEnd("world_snapshot.json"), CancellationToken.None);
+        await receiver.HandleAsync(new SnapshotBegin("world_farm_terrain.bin", 1, terrain.Length), CancellationToken.None);
+        await receiver.HandleAsync(new SnapshotDone(), CancellationToken.None);
+
+        Assert.False(File.Exists(Path.Combine(_directory, "mp_apply_world")));
+
+        await receiver.HandleAsync(new SnapshotBegin("world_snapshot.json", 1, world.Length), CancellationToken.None);
+        await receiver.HandleChunkAsync(1, 0, world, CancellationToken.None);
+        await receiver.HandleAsync(new SnapshotEnd("world_snapshot.json"), CancellationToken.None);
+        await receiver.HandleAsync(new SnapshotBegin("world_farm_terrain.bin", 1, terrain.Length), CancellationToken.None);
+        await receiver.HandleChunkAsync(2, 0, terrain, CancellationToken.None);
+        await receiver.HandleAsync(new SnapshotEnd("world_farm_terrain.bin"), CancellationToken.None);
+        await receiver.HandleAsync(new SnapshotDone(), CancellationToken.None);
+
+        Assert.True(File.Exists(Path.Combine(_directory, "mp_apply_world")));
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_directory, recursive: true); } catch { }

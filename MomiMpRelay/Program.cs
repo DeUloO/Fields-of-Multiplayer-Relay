@@ -623,7 +623,7 @@ static class Program
 
     static async Task ClientReceiveLoop(ChannelReader<RelayPacket> messages, string mpDir, string remotePath, CancellationToken ct)
     {
-        var snap = new SnapshotReceiver(mpDir);
+        using var snap = new SnapshotReceiver(mpDir);
 
         while (!ct.IsCancellationRequested)
         {
