@@ -99,11 +99,13 @@ Run the stress profile explicitly:
 dotnet test MomiMpRelay.StressTests/MomiMpRelay.StressTests.csproj --filter Category=Stress
 ```
 
-The default profile runs three scenarios:
+The default profile runs five scenarios:
 
 - Four clients with 500 updates per client
 - Five client reconnect cycles
 - Eight clients with 2,000 updates per client
+- Four clients while repeatedly locking their `remote.json` files to simulate slow filesystem consumers
+- A 30-second two-client soak run with continuous state updates
 
 Configure the profiles with environment variables:
 
@@ -113,10 +115,13 @@ $env:MOMI_STRESS_UPDATES = "2000"
 $env:MOMI_STRESS_RECONNECTS = "10"
 $env:MOMI_STRESS_HIGH_CLIENTS = "12"
 $env:MOMI_STRESS_HIGH_UPDATES = "5000"
+$env:MOMI_STRESS_SLOW_CLIENTS = "6"
+$env:MOMI_STRESS_SLOW_UPDATES = "1000"
+$env:MOMI_STRESS_SOAK_SECONDS = "60"
 dotnet test MomiMpRelay.StressTests/MomiMpRelay.StressTests.csproj --filter Category=Stress
 ```
 
-The remaining future stress target is an intentionally stalled consumer and long-running soak behavior.
+The stress project is intended for occasional manual or scheduled runs. It is excluded from `MomiMpRelay.slnx` so normal builds and test runs remain fast and deterministic.
 
 ## Project Structure
 
