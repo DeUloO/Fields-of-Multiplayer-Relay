@@ -34,21 +34,21 @@ This is the persistent backlog for the remaining netcode and design work. The tr
 
 ## Architecture
 
-- [ ] Extract the host workflow from `Program.cs` into `Modes/RelayHost.cs`.
+- [x] Extract the host workflow from `Program.cs` into `Modes/RelayHost.cs`.
   - Own host peer/session management.
   - Own player-state aggregation and broadcasting.
   - Own host-side snapshot coordination.
 
-- [ ] Extract the client workflow into `Modes/RelayClient.cs`.
+- [x] Extract the client workflow into `Modes/RelayClient.cs`.
   - Own connection and reconnect lifecycle.
   - Own network polling task.
   - Own local-state sending and remote-state receiving.
 
-- [ ] Extract auto-mode orchestration into `Modes/AutoRelay.cs`.
+- [x] Extract auto-mode orchestration into `Modes/AutoRelay.cs`.
   - Own `mp_control.json` watching.
   - Own mode transitions and session teardown.
 
-- [ ] Introduce dependency boundaries for mode classes.
+- [x] Introduce dependency boundaries for mode classes.
   - Inject file storage, transport, status reporting, and time/retry behavior.
   - Reduce static helper calls and closure-heavy orchestration.
 
