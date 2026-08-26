@@ -2,7 +2,7 @@ namespace MomiMpRelay.Snapshots;
 
 using MomiMpRelay.Models;
 
-sealed class SnapshotReceiver
+public sealed class SnapshotReceiver
 {
     readonly string _mpDir;
     readonly Dictionary<string, FileStream> _open = new();

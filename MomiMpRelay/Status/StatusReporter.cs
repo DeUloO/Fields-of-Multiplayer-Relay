@@ -2,7 +2,7 @@ using System.Text.Json.Nodes;
 
 namespace MomiMpRelay.Status;
 
-sealed class StatusReporter
+public sealed class StatusReporter
 {
     readonly string _path;
     long _hb;
@@ -27,7 +27,7 @@ sealed class StatusReporter
         }
     }
 
-    async Task WriteOnceAsync(CancellationToken ct)
+    public async Task WriteOnceAsync(CancellationToken ct)
     {
         var obj = new JsonObject
         {

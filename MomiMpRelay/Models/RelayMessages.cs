@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 
 namespace MomiMpRelay.Models;
 
-static class RelayProtocol
+public static class RelayProtocol
 {
     public const string ConnectionKey = "momi-mp";
 }
@@ -18,7 +18,7 @@ public enum RelayPacketKind : byte
 public readonly record struct RelayPacket(RelayPacketKind Kind, byte[] Data);
 
 [JsonConverter(typeof(RelayControlJsonConverter))]
-sealed record RelayControl
+public sealed record RelayControl
 {
     [JsonPropertyName("mode")]
     public string Mode { get; init; } = "off";
@@ -80,12 +80,12 @@ public interface IRelayMessage
     JsonObject ToJson();
 }
 
-interface IMpControlMessage : IRelayMessage
+public interface IMpControlMessage : IRelayMessage
 {
     string MpMessage { get; }
 }
 
-abstract record MpControlMessage : IMpControlMessage
+public abstract record MpControlMessage : IMpControlMessage
 {
     protected MpControlMessage(string mpMessage) => MpMessage = mpMessage;
 
@@ -98,25 +98,25 @@ abstract record MpControlMessage : IMpControlMessage
     public JsonObject ToJson() => JsonSerializer.SerializeToNode(this)!.AsObject();
 }
 
-sealed record SnapshotRequest : MpControlMessage
+public sealed record SnapshotRequest : MpControlMessage
 {
     public SnapshotRequest() : base("snap_req") { }
 }
 
-sealed record SnapshotDone : MpControlMessage
+public sealed record SnapshotDone : MpControlMessage
 {
     public SnapshotDone() : base("snap_done") { }
 }
 
-sealed record SnapshotBegin(
+public sealed record SnapshotBegin(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("chunks")] int Chunks,
     [property: JsonPropertyName("bytes")] int Bytes) : MpControlMessage("snap_begin");
 
-sealed record SnapshotEnd(
+public sealed record SnapshotEnd(
     [property: JsonPropertyName("name")] string Name) : MpControlMessage("snap_end");
 
-sealed record PlayerState(string PlayerId, JsonObject Payload) : IRelayMessage
+public sealed record PlayerState(string PlayerId, JsonObject Payload) : IRelayMessage
 {
     public string Identifier => "player_id";
     public JsonObject ToJson() => Payload;
@@ -135,13 +135,13 @@ sealed record PlayerState(string PlayerId, JsonObject Payload) : IRelayMessage
     }
 }
 
-sealed record RelayStateUpdate(JsonObject Payload) : IRelayMessage
+public sealed record RelayStateUpdate(JsonObject Payload) : IRelayMessage
 {
     public string Identifier => "players";
     public JsonObject ToJson() => Payload;
 }
 
-static class RelayMessageParser
+public static class RelayMessageParser
 {
     public static IMpControlMessage? ParseControl(string json)
     {

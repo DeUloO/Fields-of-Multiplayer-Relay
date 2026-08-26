@@ -1,6 +1,6 @@
 namespace MomiMpRelay.Configuration;
 
-static class RelayDirectories
+public static class RelayDirectories
 {
     public static string FomRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

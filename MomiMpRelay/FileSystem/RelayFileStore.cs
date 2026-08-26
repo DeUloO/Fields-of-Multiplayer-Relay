@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 
 namespace MomiMpRelay.FileSystem;
 
-static class RelayFileStore
+public static class RelayFileStore
 {
     public static async Task<string?> ReadTextSharedAsync(string path, CancellationToken ct)
     {
