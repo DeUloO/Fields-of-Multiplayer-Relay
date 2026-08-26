@@ -91,7 +91,8 @@ This is the persistent backlog for the remaining netcode and design work. The tr
 - [x] Test multiple clients updating state concurrently.
 - [x] Test host shutdown while clients are connected.
 - [x] Test client shutdown during an active snapshot.
-- [ ] Add stress coverage for rapid state updates and slow consumers.
+- [x] Add stress coverage for rapid state updates.
+- [ ] Add stress coverage for slow consumers and long-running soak behavior.
 
 ## Lower Priority
 
