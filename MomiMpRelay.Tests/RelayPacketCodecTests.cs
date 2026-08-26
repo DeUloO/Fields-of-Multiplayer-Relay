@@ -73,4 +73,28 @@ public sealed class RelayPacketCodecTests
         Assert.Equal(17, chunk.Sequence);
         Assert.Equal(new byte[] { 7, 8 }, chunk.Data);
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(int.MaxValue)]
+    public void SnapshotSequenceBoundariesRoundTrip(int sequence)
+    {
+        var encoded = RelayPacketCodec.EncodeSnapshotChunk(1, sequence, new byte[] { 42 });
+
+        Assert.True(RelayPacketCodec.TryDecode(encoded, out var packet));
+        Assert.True(RelayPacketCodec.TryDecodeSnapshotChunk(packet, out var chunk));
+        Assert.Equal(sequence, chunk.Sequence);
+    }
+
+    [Fact]
+    public void LargeCodecPayloadRoundTripsWithoutJsonEncoding()
+    {
+        var source = Enumerable.Range(0, 20_000).Select(value => (byte)(value % 251)).ToArray();
+
+        var encoded = RelayPacketCodec.EncodeSnapshotChunk(2, 3, source);
+
+        Assert.True(RelayPacketCodec.TryDecode(encoded, out var packet));
+        Assert.True(RelayPacketCodec.TryDecodeSnapshotChunk(packet, out var chunk));
+        Assert.Equal(source, chunk.Data);
+    }
 }

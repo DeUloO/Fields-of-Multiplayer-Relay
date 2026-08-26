@@ -42,6 +42,44 @@ public sealed class RelayFileStoreTests : IDisposable
         Assert.False(File.Exists(path + ".tmp"));
     }
 
+    [Fact]
+    public async Task ReadTextRetriesAfterTransientFileLock()
+    {
+        var path = Path.Combine(_directory, "locked.json");
+        await File.WriteAllTextAsync(path, "ready");
+        await using var locked = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+        var read = RelayFileStore.ReadTextSharedAsync(path, CancellationToken.None);
+        await Task.Delay(30);
+        await locked.DisposeAsync();
+
+        Assert.Equal("ready", await read);
+    }
+
+    [Fact]
+    public async Task WriteRemoteReportsFailureWhenDirectoryDoesNotExist()
+    {
+        using var writeLock = new SemaphoreSlim(1, 1);
+        var path = Path.Combine(_directory, "missing", "remote.json");
+
+        var result = await RelayFileStore.WriteRemoteAsync(path, "data", writeLock, CancellationToken.None);
+
+        Assert.False(result);
+    }
+
+    [Fact]
+    public void CleanupTemporaryFilesRemovesStaleArtifacts()
+    {
+        var temp = Path.Combine(_directory, "status.tmp");
+        var part = Path.Combine(_directory, "snapshot.part");
+        File.WriteAllText(temp, "temporary");
+        File.WriteAllText(part, "partial");
+
+        RelayFileStore.CleanupTemporaryFiles(_directory);
+
+        Assert.False(File.Exists(temp));
+        Assert.False(File.Exists(part));
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_directory, recursive: true); } catch { }

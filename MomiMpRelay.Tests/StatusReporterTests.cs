@@ -37,6 +37,18 @@ public sealed class StatusReporterTests : IDisposable
         Assert.False(File.Exists(Path.Combine(_directory, "mp_status.json")));
     }
 
+    [Fact]
+    public async Task RunStopsWhenCancelled()
+    {
+        var reporter = new StatusReporter(_directory);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await reporter.RunAsync(cts.Token);
+
+        Assert.False(File.Exists(Path.Combine(_directory, "mp_status.json")));
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_directory, recursive: true); } catch { }

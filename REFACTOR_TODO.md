@@ -83,14 +83,14 @@ This is the persistent backlog for the remaining netcode and design work. The tr
 
 ## Test Coverage
 
-- [ ] Test `SnapshotReceiver` cancellation and cleanup paths.
-- [ ] Test `StatusReporter` cancellation behavior.
-- [ ] Test transient file-lock retry behavior in `RelayFileStore`.
+- [x] Test `SnapshotReceiver` cancellation and cleanup paths.
+- [x] Test `StatusReporter` cancellation behavior.
+- [x] Test transient file-lock retry behavior in `RelayFileStore`.
 - [x] Test invalid and partial control files.
-- [ ] Test packet sequence boundaries and large transfer metadata.
-- [ ] Test multiple clients updating state concurrently.
-- [ ] Test host shutdown while clients are connected.
-- [ ] Test client shutdown during an active snapshot.
+- [x] Test packet sequence boundaries and large transfer metadata.
+- [x] Test multiple clients updating state concurrently.
+- [x] Test host shutdown while clients are connected.
+- [x] Test client shutdown during an active snapshot.
 - [ ] Add stress coverage for rapid state updates and slow consumers.
 
 ## Lower Priority

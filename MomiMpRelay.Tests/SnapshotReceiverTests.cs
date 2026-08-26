@@ -62,6 +62,31 @@ public sealed class SnapshotReceiverTests : IDisposable
         Assert.True(File.Exists(Path.Combine(_directory, "mp_apply_world")));
     }
 
+    [Fact]
+    public async Task CancellationDuringChunkWriteCanBeCleanedUp()
+    {
+        using var receiver = new SnapshotReceiver(_directory);
+        using var cts = new CancellationTokenSource();
+        await receiver.HandleAsync(new SnapshotBegin("world_snapshot.json", 1, 1), CancellationToken.None);
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            receiver.HandleChunkAsync(1, 0, new byte[] { 1 }, cts.Token));
+
+        receiver.Dispose();
+        Assert.False(File.Exists(Path.Combine(_directory, "world_snapshot.json.part")));
+    }
+
+    [Fact]
+    public async Task InvalidSnapshotMetadataDoesNotCreatePartialFile()
+    {
+        using var receiver = new SnapshotReceiver(_directory);
+
+        await receiver.HandleAsync(new SnapshotBegin("unknown.bin", 1, 1), CancellationToken.None);
+
+        Assert.False(File.Exists(Path.Combine(_directory, "unknown.bin.part")));
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(_directory, recursive: true); } catch { }

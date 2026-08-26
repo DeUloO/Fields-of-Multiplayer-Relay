@@ -41,7 +41,7 @@ public sealed class RelayClient
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex) { Console.WriteLine($"[CLIENT] {ex.Message}"); }
-            if (!ct.IsCancellationRequested) { _reporter.Set("connecting", "join", 0, $"retrying in {reconnectDelay.TotalSeconds:0}s"); try { File.Delete(_remotePath); } catch { } try { await Task.Delay(reconnectDelay, ct); } catch (OperationCanceledException) { break; } reconnectDelay = TimeSpan.FromSeconds(Math.Min(reconnectDelay.TotalSeconds * 2, 30)); }
+            if (!ct.IsCancellationRequested) { _reporter.Set("connecting", "join", 0, $"retrying in {reconnectDelay.TotalSeconds:0}s"); try { File.Delete(_remotePath); } catch { } Console.WriteLine($"[CLIENT] Reconnecting in {reconnectDelay.TotalSeconds:0}s…"); try { await Task.Delay(reconnectDelay, ct); } catch (OperationCanceledException) { break; } reconnectDelay = TimeSpan.FromSeconds(Math.Min(reconnectDelay.TotalSeconds * 2, 30)); }
         }
         return 0;
     }
