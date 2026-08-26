@@ -34,7 +34,42 @@ public static class RelayPacketCodec
             return false;
         }
 
+        if (packet[0] == (byte)RelayPacketKind.Json && packet.Length == 1)
+        {
+            result = default;
+            return false;
+        }
+
+        if (packet[0] == (byte)RelayPacketKind.SnapshotChunk &&
+            (packet.Length < 1 + 1 + sizeof(int) ||
+             !IsKnownFileId(packet[1]) ||
+             BinaryPrimitives.ReadInt32LittleEndian(packet[2..]) < 0 ||
+             packet.Length == 1 + 1 + sizeof(int)))
+        {
+            result = default;
+            return false;
+        }
+
         result = new RelayPacket((RelayPacketKind)packet[0], packet[1..].ToArray());
         return true;
     }
+
+    public static bool TryDecodeSnapshotChunk(RelayPacket packet, out SnapshotChunk result)
+    {
+        if (packet.Kind != RelayPacketKind.SnapshotChunk || packet.Data.Length < 1 + sizeof(int) ||
+            !IsKnownFileId(packet.Data[0]) ||
+            BinaryPrimitives.ReadInt32LittleEndian(packet.Data.AsSpan(1)) < 0 ||
+            packet.Data.Length == 1 + sizeof(int))
+        {
+            result = default;
+            return false;
+        }
+
+        result = new SnapshotChunk(packet.Data[0],
+            BinaryPrimitives.ReadInt32LittleEndian(packet.Data.AsSpan(1)),
+            packet.Data[(1 + sizeof(int))..]);
+        return true;
+    }
+
+    static bool IsKnownFileId(byte fileId) => fileId is 1 or 2;
 }

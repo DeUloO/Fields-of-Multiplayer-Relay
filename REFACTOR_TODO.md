@@ -21,7 +21,7 @@ This is the persistent backlog for the remaining netcode and design work. The tr
   - Create `mp_apply_world` only after every required file has completed successfully.
   - Clean up open streams and `.part` files on cancellation, disconnect, or invalid input.
 
-- [ ] Strengthen `RelayPacketCodec` validation.
+- [x] Strengthen `RelayPacketCodec` validation.
   - Validate the minimum binary snapshot header length in the codec.
   - Decode file ID and sequence into a typed packet model.
   - Reject malformed packet payloads before they reach application code.

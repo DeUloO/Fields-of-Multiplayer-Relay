@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Buffers.Binary;
 using System.Net;
 using LiteNetLib;
 using LiteNetLib.Utils;
@@ -632,13 +631,9 @@ static class Program
                 var packet = await messages.ReadAsync(ct);
                 if (packet.Kind == RelayPacketKind.SnapshotChunk)
                 {
-                    if (packet.Data.Length >= 1 + sizeof(int))
+                    if (RelayPacketCodec.TryDecodeSnapshotChunk(packet, out var chunk))
                     {
-                        var fileId = packet.Data[0];
-                        var sequence = BinaryPrimitives.ReadInt32LittleEndian(
-                            packet.Data.AsSpan(1));
-                        await snap.HandleChunkAsync(fileId, sequence,
-                            packet.Data[(1 + sizeof(int))..], ct);
+                        await snap.HandleChunkAsync(chunk.FileId, chunk.Sequence, chunk.Data, ct);
                     }
                     continue;
                 }

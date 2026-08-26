@@ -50,4 +50,27 @@ public sealed class RelayPacketCodecTests
     {
         Assert.False(RelayPacketCodec.TryDecode([], out _));
     }
+
+    [Theory]
+    [InlineData(new byte[] { 2 })]
+    [InlineData(new byte[] { 2, 1 })]
+    [InlineData(new byte[] { 2, 1, 0, 0, 0, 0 })]
+    [InlineData(new byte[] { 2, 9, 0, 0, 0, 1, 4 })]
+    [InlineData(new byte[] { 2, 1, 255, 255, 255, 255, 4 })]
+    public void DecodeRejectsMalformedSnapshotPackets(byte[] packet)
+    {
+        Assert.False(RelayPacketCodec.TryDecode(packet, out _));
+    }
+
+    [Fact]
+    public void DecodeSnapshotChunkReturnsTypedMetadata()
+    {
+        var packet = new RelayPacket(RelayPacketKind.SnapshotChunk,
+            new byte[] { 2, 17, 0, 0, 0, 7, 8 });
+
+        Assert.True(RelayPacketCodec.TryDecodeSnapshotChunk(packet, out var chunk));
+        Assert.Equal(2, chunk.FileId);
+        Assert.Equal(17, chunk.Sequence);
+        Assert.Equal(new byte[] { 7, 8 }, chunk.Data);
+    }
 }
