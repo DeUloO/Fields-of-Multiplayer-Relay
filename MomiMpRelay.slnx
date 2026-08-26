@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="MomiMpRelay.IntegrationTests/MomiMpRelay.IntegrationTests.csproj" />
+  <Project Path="MomiMpRelay.Tests/MomiMpRelay.Tests.csproj" />
+  <Project Path="MomiMpRelay/MomiMpRelay.csproj" />
+</Solution>
