@@ -139,6 +139,68 @@ public sealed class MutationLedger : IDisposable
             "SELECT head_relay_seq FROM sessions WHERE session_id = @sessionId",
             new { sessionId }) ?? 0;
 
+    /// <summary>Reconstructs canonical envelopes strictly after the given relaySeq, ascending, for distribution.</summary>
+    public IReadOnlyList<MutationEnvelope> GetEventsAfter(string sessionId, long afterRelaySeq, int maxCount)
+    {
+        lock (_sync)
+        {
+            var rows = _connection.Query<ProducerEventRow>(
+                """
+                SELECT relay_seq AS RelaySeq, event_id AS EventId, player_id AS PlayerId,
+                       client_epoch AS ClientEpoch, client_seq AS ClientSeq, payload_json AS PayloadJson
+                FROM producer_events
+                WHERE session_id = @sessionId AND relay_seq > @afterRelaySeq
+                ORDER BY relay_seq
+                LIMIT @maxCount
+                """,
+                new { sessionId, afterRelaySeq, maxCount });
+
+            var events = new List<MutationEnvelope>();
+            foreach (var row in rows)
+            {
+                var mutationEvent = JsonSerializer.Deserialize<MutationEvent>(row.PayloadJson, MutationJson.Options)
+                    ?? throw new InvalidOperationException($"Ledger event {row.EventId} could not be deserialized.");
+                events.Add(new MutationEnvelope(RelaySession.ProtocolVersion, sessionId, row.PlayerId,
+                    row.ClientEpoch, row.ClientSeq, row.EventId, mutationEvent, row.RelaySeq));
+            }
+            return events;
+        }
+    }
+
+    public long GetClientCursor(string sessionId, string playerId) =>
+        _connection.QuerySingleOrDefault<long?>(
+            "SELECT last_applied_relay_seq FROM client_progress WHERE session_id = @sessionId AND player_id = @playerId",
+            new { sessionId, playerId }) ?? 0;
+
+    /// <summary>Advances a client's durable applied cursor; never moves it backward.</summary>
+    public void RecordClientCursor(string sessionId, string playerId, long relaySeq)
+    {
+        lock (_sync)
+        {
+            using var transaction = _connection.BeginTransaction();
+            var current = GetClientCursor(sessionId, playerId);
+            if (relaySeq <= current)
+            {
+                transaction.Commit();
+                return;
+            }
+
+            _connection.Execute(
+                """
+                INSERT INTO client_progress (session_id, player_id, last_applied_relay_seq, updated_at_utc)
+                VALUES (@sessionId, @playerId, @relaySeq, @updatedAtUtc)
+                ON CONFLICT (session_id, player_id) DO UPDATE SET
+                    last_applied_relay_seq = excluded.last_applied_relay_seq,
+                    updated_at_utc = excluded.updated_at_utc
+                """,
+                new { sessionId, playerId, relaySeq, updatedAtUtc = DateTime.UtcNow.ToString("o") }, transaction);
+
+            transaction.Commit();
+        }
+    }
+
+    sealed record ProducerEventRow(long RelaySeq, string EventId, string PlayerId, string ClientEpoch, long ClientSeq, string PayloadJson);
+
     void EnsureSession(MutationEnvelope envelope, SqliteTransaction transaction)
     {
         _connection.Execute(
