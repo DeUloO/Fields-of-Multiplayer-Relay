@@ -59,7 +59,7 @@ public sealed class MutationEventTests
     {
         var eventValue = JsonSerializer.Deserialize<MutationEvent>(
             "{\"k\":\"ipk\",\"s\":1,\"loc\":1,\"g\":\"drop\"}", MutationJson.Options)!;
-        var envelope = new MutationEnvelope(1, "session", "player", "epoch", 1, "event", 0, eventValue);
+        var envelope = new MutationEnvelope(1, "session", "player", "epoch", 1, "event", eventValue, 0);
 
         Assert.NotEmpty(MutationValidator.Validate(envelope));
     }
@@ -119,7 +119,7 @@ public sealed class MutationEventTests
     public void ValidationRejectsObviousInvalidValues(string eventJson)
     {
         var eventValue = JsonSerializer.Deserialize<MutationEvent>(eventJson, MutationJson.Options)!;
-        var envelope = new MutationEnvelope(2, "session", "player", "epoch", 1, "event", 0, eventValue);
+        var envelope = new MutationEnvelope(2, "session", "player", "epoch", 1, "event", eventValue, 0);
 
         Assert.NotEmpty(MutationValidator.Validate(envelope));
     }

@@ -30,8 +30,9 @@ public sealed record MutationEnvelope(
     [property: JsonPropertyName("clientEpoch")] string ClientEpoch,
     [property: JsonPropertyName("clientSeq")] long ClientSeq,
     [property: JsonPropertyName("eventId")] string EventId,
-    [property: JsonPropertyName("relaySeq")] long RelaySeq,
-    [property: JsonPropertyName("event")] MutationEvent Event);
+    [property: JsonPropertyName("event")] MutationEvent Event,
+    // Unassigned (outbox/pre-ledger) envelopes omit relaySeq; the relay assigns it starting at 1.
+    [property: JsonPropertyName("relaySeq"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] long RelaySeq = 0);
 
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "k")]
 [JsonDerivedType(typeof(SpawnMutation), "spawn")]
