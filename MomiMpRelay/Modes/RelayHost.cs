@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using LiteNetLib;
 using MomiMpRelay.FileSystem;
+using MomiMpRelay.Ledger;
 using MomiMpRelay.Logging;
 using MomiMpRelay.Models;
 using MomiMpRelay.Networking;
@@ -38,6 +39,9 @@ public sealed class RelayHost
         var sessions = new ConcurrentDictionary<ClientSession, byte>();
         using var writeLock = new SemaphoreSlim(1, 1);
         using var snapshotLock = new SemaphoreSlim(1, 1);
+        using var ledger = new MutationLedger(_mpDir);
+        var outboxDir = Path.Combine(_mpDir, "outbox");
+        var inboxDir = Path.Combine(_mpDir, "inbox");
         string? hostPid = null;
         void PushToAll()
         {
@@ -124,6 +128,17 @@ public sealed class RelayHost
                         PushToAll();
                     }
                 }
+
+                // Self round trip only: the host's own player, via its own local files and ledger.
+                // Remote joiners are not yet fed into this ledger (deferred to the network-forwarding step).
+                MutationOutboxIngestor.Ingest(outboxDir, ledger);
+                if (hostPid is not null)
+                {
+                    var batch = MutationInboxMaterializer.BuildBatch(ledger, hostPid, hostPid, maxEvents: 500);
+                    if (batch is not null)
+                        MutationInboxPublisher.PublishAtomic(inboxDir, batch);
+                }
+
                 await Task.Delay(PollMs, ct);
             }
         }

@@ -25,7 +25,7 @@ public static class MutationOutboxIngestor
         if (!Directory.Exists(outboxDir))
             return new MutationOutboxIngestResult(0, 0, 0, null);
 
-        var segments = Directory.GetFiles(outboxDir, "segment-*.jsonl")
+        var segments = Directory.GetFiles(outboxDir, "segment-*.json")
             .OrderBy(path => path, StringComparer.Ordinal);
 
         int accepted = 0, duplicates = 0, malformed = 0;
@@ -34,25 +34,30 @@ public static class MutationOutboxIngestor
 
         foreach (var segment in segments)
         {
-            string[] lines;
+            JsonElement[] entries;
             try
             {
-                lines = File.ReadAllLines(segment);
+                using var document = JsonDocument.Parse(File.ReadAllText(segment));
+                entries = document.RootElement.ValueKind == JsonValueKind.Array
+                    ? [.. document.RootElement.EnumerateArray().Select(e => e.Clone())]
+                    : [];
             }
             catch (IOException)
             {
                 continue; // still being written; retried on the next ingestion pass
             }
-
-            foreach (var line in lines)
+            catch (JsonException)
             {
-                if (string.IsNullOrWhiteSpace(line))
-                    continue;
+                malformed++;
+                continue;
+            }
 
+            foreach (var entry in entries)
+            {
                 MutationEnvelope envelope;
                 try
                 {
-                    envelope = MutationJson.DeserializeAndValidate(line);
+                    envelope = MutationJson.DeserializeAndValidate(entry.GetRawText());
                 }
                 catch (JsonException)
                 {

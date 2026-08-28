@@ -134,10 +134,15 @@ public sealed class MutationLedger : IDisposable
         }
     }
 
-    public long GetHeadRelaySeq(string sessionId) =>
-        _connection.QuerySingleOrDefault<long?>(
-            "SELECT head_relay_seq FROM sessions WHERE session_id = @sessionId",
-            new { sessionId }) ?? 0;
+    public long GetHeadRelaySeq(string sessionId)
+    {
+        lock (_sync)
+        {
+            return _connection.QuerySingleOrDefault<long?>(
+                "SELECT head_relay_seq FROM sessions WHERE session_id = @sessionId",
+                new { sessionId }) ?? 0;
+        }
+    }
 
     /// <summary>Reconstructs canonical envelopes strictly after the given relaySeq, ascending, for distribution.</summary>
     public IReadOnlyList<MutationEnvelope> GetEventsAfter(string sessionId, long afterRelaySeq, int maxCount)
@@ -167,7 +172,15 @@ public sealed class MutationLedger : IDisposable
         }
     }
 
-    public long GetClientCursor(string sessionId, string playerId) =>
+    public long GetClientCursor(string sessionId, string playerId)
+    {
+        lock (_sync)
+        {
+            return GetClientCursorCore(sessionId, playerId);
+        }
+    }
+
+    long GetClientCursorCore(string sessionId, string playerId) =>
         _connection.QuerySingleOrDefault<long?>(
             "SELECT last_applied_relay_seq FROM client_progress WHERE session_id = @sessionId AND player_id = @playerId",
             new { sessionId, playerId }) ?? 0;
@@ -178,7 +191,7 @@ public sealed class MutationLedger : IDisposable
         lock (_sync)
         {
             using var transaction = _connection.BeginTransaction();
-            var current = GetClientCursor(sessionId, playerId);
+            var current = GetClientCursorCore(sessionId, playerId);
             if (relaySeq <= current)
             {
                 transaction.Commit();

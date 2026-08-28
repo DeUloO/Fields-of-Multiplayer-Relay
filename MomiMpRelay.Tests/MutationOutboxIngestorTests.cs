@@ -21,10 +21,10 @@ public sealed class MutationOutboxIngestorTests : IDisposable
     [Fact]
     public void IngestAcceptsEnvelopesAcrossOrderedSegmentsAndWritesAck()
     {
-        WriteSegment("segment-000001.jsonl",
+        WriteSegment("segment-000001.json",
             EnvelopeLine(clientSeq: 1, eventId: "p1:e1:1"),
             EnvelopeLine(clientSeq: 2, eventId: "p1:e1:2"));
-        WriteSegment("segment-000002.jsonl",
+        WriteSegment("segment-000002.json",
             EnvelopeLine(clientSeq: 3, eventId: "p1:e1:3"));
 
         var result = MutationOutboxIngestor.Ingest(_outboxDir, _ledger);
@@ -46,7 +46,7 @@ public sealed class MutationOutboxIngestorTests : IDisposable
     [Fact]
     public void ReingestingTheSameSegmentsIsIdempotent()
     {
-        WriteSegment("segment-000001.jsonl", EnvelopeLine(clientSeq: 1, eventId: "p1:e1:1"));
+        WriteSegment("segment-000001.json", EnvelopeLine(clientSeq: 1, eventId: "p1:e1:1"));
 
         var first = MutationOutboxIngestor.Ingest(_outboxDir, _ledger);
         var second = MutationOutboxIngestor.Ingest(_outboxDir, _ledger);
@@ -58,11 +58,11 @@ public sealed class MutationOutboxIngestorTests : IDisposable
     }
 
     [Fact]
-    public void MalformedLinesAreSkippedWithoutStoppingIngestion()
+    public void MalformedEntriesAreSkippedWithoutStoppingIngestion()
     {
-        WriteSegment("segment-000001.jsonl",
+        WriteSegment("segment-000001.json",
             EnvelopeLine(clientSeq: 1, eventId: "p1:e1:1"),
-            "not valid json",
+            "\"not an envelope\"",
             EnvelopeLine(clientSeq: 2, eventId: "p1:e1:2"));
 
         var result = MutationOutboxIngestor.Ingest(_outboxDir, _ledger);
@@ -81,8 +81,8 @@ public sealed class MutationOutboxIngestorTests : IDisposable
         Assert.Null(result.Ack);
     }
 
-    void WriteSegment(string name, params string[] lines) =>
-        File.WriteAllLines(Path.Combine(_outboxDir, name), lines);
+    void WriteSegment(string name, params string[] rawJsonEntries) =>
+        File.WriteAllText(Path.Combine(_outboxDir, name), $"[{string.Join(",", rawJsonEntries)}]");
 
     static string EnvelopeLine(long clientSeq, string eventId) => JsonSerializer.Serialize(
         new MutationEnvelope(2, "session-1", "Farmer|Farm", "epoch-1", clientSeq, eventId,
