@@ -9,7 +9,7 @@ public sealed class MutationEventTests
     [Theory]
     [InlineData("{\"k\":\"spawn\",\"s\":42,\"loc\":1,\"tx\":10,\"ty\":12,\"oid\":405,\"hp\":3}", typeof(SpawnMutation))]
     [InlineData("{\"k\":\"gone\",\"s\":43,\"loc\":1,\"cx\":10,\"cy\":12,\"oid\":405}", typeof(GoneMutation))]
-    [InlineData("{\"k\":\"hit\",\"s\":44,\"loc\":1,\"cx\":10,\"cy\":12,\"oid\":405,\"dmg\":1}", typeof(HitMutation))]
+    [InlineData("{\"k\":\"hit\",\"s\":44,\"loc\":1,\"cx\":10,\"cy\":12,\"oid\":405,\"ehp\":3,\"rhp\":2,\"dmg\":1}", typeof(HitMutation))]
     [InlineData("{\"k\":\"fspawn\",\"s\":45,\"loc\":1,\"obj\":{\"opaque\":true},\"invs\":[[{\"item\":true}]]}", typeof(FurnitureSpawnMutation))]
     [InlineData("{\"k\":\"bspawn\",\"s\":46,\"loc\":1,\"obj\":{\"opaque\":true},\"invs\":[[{\"item\":true}]],\"dyn\":{\"opaque\":true}}", typeof(BuildingSpawnMutation))]
     [InlineData("{\"k\":\"cinv\",\"s\":47,\"loc\":1,\"tx\":10,\"ty\":12,\"oid\":405,\"inv\":[{\"item\":true}]}", typeof(ContainerInventoryMutation))]
@@ -61,8 +61,19 @@ public sealed class MutationEventTests
             JsonSerializer.Deserialize<MutationEvent>("{\"k\":\"turn_in_box\",\"s\":1,\"loc\":1}", MutationJson.Options));
     }
 
+    [Fact]
+    public void HitRequiresExpandedHitpointFields()
+    {
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<MutationEvent>(
+            "{\"k\":\"hit\",\"s\":44,\"loc\":1,\"cx\":10,\"cy\":12,\"oid\":405,\"dmg\":1}",
+            MutationJson.Options));
+    }
+
     [Theory]
-    [InlineData("{\"k\":\"hit\",\"s\":1,\"loc\":1,\"cx\":0,\"cy\":0,\"oid\":1,\"dmg\":0}")]
+    [InlineData("{\"k\":\"hit\",\"s\":1,\"loc\":1,\"cx\":0,\"cy\":0,\"oid\":1,\"ehp\":3,\"rhp\":2,\"dmg\":0}")]
+    [InlineData("{\"k\":\"hit\",\"s\":1,\"loc\":1,\"cx\":0,\"cy\":0,\"oid\":1,\"ehp\":-1,\"rhp\":0,\"dmg\":1}")]
+    [InlineData("{\"k\":\"hit\",\"s\":1,\"loc\":1,\"cx\":0,\"cy\":0,\"oid\":1,\"ehp\":2,\"rhp\":2,\"dmg\":1}")]
+    [InlineData("{\"k\":\"hit\",\"s\":1,\"loc\":1,\"cx\":0,\"cy\":0,\"oid\":1,\"ehp\":3,\"rhp\":1,\"dmg\":1}")]
     [InlineData("{\"k\":\"isp\",\"s\":1,\"loc\":1,\"g\":\" \" ,\"x\":0,\"y\":0,\"its\":[]}")]
     [InlineData("{\"k\":\"spawn\",\"s\":1,\"loc\":1,\"tx\":-1,\"ty\":0,\"oid\":1}")]
     public void ValidationRejectsObviousInvalidValues(string eventJson)

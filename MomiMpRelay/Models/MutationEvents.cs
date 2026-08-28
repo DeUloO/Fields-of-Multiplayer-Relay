@@ -71,6 +71,8 @@ public sealed record HitMutation(
     [property: JsonPropertyName("cx"), JsonRequired] int CellX,
     [property: JsonPropertyName("cy"), JsonRequired] int CellY,
     [property: JsonPropertyName("oid"), JsonRequired] int ObjectId,
+    [property: JsonPropertyName("ehp"), JsonRequired] int ExpectedHitPoints,
+    [property: JsonPropertyName("rhp"), JsonRequired] int ResultingHitPoints,
     [property: JsonPropertyName("dmg"), JsonRequired] int Damage) : MutationEvent(Sequence, LocationId);
 
 public sealed record FurnitureSpawnMutation(
@@ -209,7 +211,13 @@ public static class MutationValidator
                 break;
             case HitMutation value:
                 ValidateCell(value.CellX, value.CellY, errors);
+                if (value.ExpectedHitPoints < 0) errors.Add("event.ehp cannot be negative.");
+                if (value.ResultingHitPoints < 0) errors.Add("event.rhp cannot be negative.");
+                if (value.ResultingHitPoints >= value.ExpectedHitPoints)
+                    errors.Add("event.rhp must be less than event.ehp.");
                 if (value.Damage <= 0) errors.Add("event.dmg must be positive.");
+                if (value.Damage != value.ExpectedHitPoints - value.ResultingHitPoints)
+                    errors.Add("event.dmg must equal event.ehp - event.rhp.");
                 break;
             case ContainerInventoryMutation value:
                 ValidateTile(value.TileX, value.TileY, errors);
