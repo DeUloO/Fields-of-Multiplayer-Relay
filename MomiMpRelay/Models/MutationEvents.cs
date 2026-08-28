@@ -35,7 +35,7 @@ public sealed record MutationEnvelope(
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "k")]
 [JsonDerivedType(typeof(SpawnMutation), "spawn")]
 [JsonDerivedType(typeof(GoneMutation), "gone")]
-[JsonDerivedType(typeof(HitMutation), "hit")]
+[JsonDerivedType(typeof(HitMutationEvent), "hit")]
 [JsonDerivedType(typeof(FurnitureSpawnMutation), "fspawn")]
 [JsonDerivedType(typeof(BuildingSpawnMutation), "bspawn")]
 [JsonDerivedType(typeof(ContainerInventoryMutation), "cinv")]
@@ -65,15 +65,14 @@ public sealed record GoneMutation(
     [property: JsonPropertyName("cy"), JsonRequired] int CellY,
     [property: JsonPropertyName("oid"), JsonRequired] int ObjectId) : MutationEvent(Sequence, LocationId);
 
-public sealed record HitMutation(
+public sealed record HitMutationEvent(
     int Sequence,
     int LocationId,
     [property: JsonPropertyName("cx"), JsonRequired] int CellX,
     [property: JsonPropertyName("cy"), JsonRequired] int CellY,
     [property: JsonPropertyName("oid"), JsonRequired] int ObjectId,
     [property: JsonPropertyName("ehp"), JsonRequired] int ExpectedHitPoints,
-    [property: JsonPropertyName("rhp"), JsonRequired] int ResultingHitPoints,
-    [property: JsonPropertyName("dmg"), JsonRequired] int Damage) : MutationEvent(Sequence, LocationId);
+    [property: JsonPropertyName("rhp"), JsonRequired] int ResultingHitPoints) : MutationEvent(Sequence, LocationId);
 
 public sealed record FurnitureSpawnMutation(
     int Sequence,
@@ -94,7 +93,8 @@ public sealed record ContainerInventoryMutation(
     [property: JsonPropertyName("tx"), JsonRequired] int TileX,
     [property: JsonPropertyName("ty"), JsonRequired] int TileY,
     [property: JsonPropertyName("oid"), JsonRequired] int ObjectId,
-    [property: JsonPropertyName("inv"), JsonRequired] JsonElement Inventory) : MutationEvent(Sequence, LocationId);
+    [property: JsonPropertyName("inv"), JsonRequired] JsonElement Inventory,
+    [property: JsonPropertyName("esig"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpectedSignature = null) : MutationEvent(Sequence, LocationId);
 
 public sealed record CropStateMutation(
     int Sequence,
@@ -106,7 +106,8 @@ public sealed record CropStateMutation(
     [property: JsonPropertyName("dc"), JsonRequired] int DayCount,
     [property: JsonPropertyName("rc"), JsonRequired] int RegrowCycle,
     [property: JsonPropertyName("mt"), JsonRequired] int ManagedTimer,
-    [property: JsonPropertyName("cf"), JsonRequired] int Flags) : MutationEvent(Sequence, LocationId);
+    [property: JsonPropertyName("cf"), JsonRequired] int Flags,
+    [property: JsonPropertyName("esig"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpectedSignature = null) : MutationEvent(Sequence, LocationId);
 
 public sealed record TerrainGroundKindMutation(
     int Sequence,
@@ -146,7 +147,8 @@ public sealed record AnimalStateMutation(
     [property: JsonPropertyName("eat"), JsonRequired] bool Eaten,
     [property: JsonPropertyName("out"), JsonRequired] bool Outside,
     [property: JsonPropertyName("hpts"), JsonRequired] int HeartPoints,
-    [property: JsonPropertyName("prod")] int? ProductionDays = null) : MutationEvent(Sequence, LocationId);
+    [property: JsonPropertyName("prod")] int? ProductionDays = null,
+    [property: JsonPropertyName("esig"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpectedSignature = null) : MutationEvent(Sequence, LocationId);
 
 public sealed record BellMutation(
     int Sequence,
@@ -209,22 +211,21 @@ public static class MutationValidator
             case GoneMutation value:
                 ValidateCell(value.CellX, value.CellY, errors);
                 break;
-            case HitMutation value:
+            case HitMutationEvent value:
                 ValidateCell(value.CellX, value.CellY, errors);
                 if (value.ExpectedHitPoints < 0) errors.Add("event.ehp cannot be negative.");
                 if (value.ResultingHitPoints < 0) errors.Add("event.rhp cannot be negative.");
                 if (value.ResultingHitPoints >= value.ExpectedHitPoints)
                     errors.Add("event.rhp must be less than event.ehp.");
-                if (value.Damage <= 0) errors.Add("event.dmg must be positive.");
-                if (value.Damage != value.ExpectedHitPoints - value.ResultingHitPoints)
-                    errors.Add("event.dmg must equal event.ehp - event.rhp.");
                 break;
             case ContainerInventoryMutation value:
                 ValidateTile(value.TileX, value.TileY, errors);
                 ValidateOpaque(value.Inventory, "event.inv", errors);
+                ValidateOptionalSignature(value.ExpectedSignature, "event.esig", errors);
                 break;
             case CropStateMutation value:
                 ValidateTile(value.TileX, value.TileY, errors);
+                ValidateOptionalSignature(value.ExpectedSignature, "event.esig", errors);
                 break;
             case TerrainGroundKindMutation value:
                 ValidateCell(value.CellX, value.CellY, errors);
@@ -245,6 +246,7 @@ public static class MutationValidator
                 ValidateCell(value.BuildingTileX, value.BuildingTileY, errors);
                 if (value.AnimalIndex < 0) errors.Add("event.idx cannot be negative.");
                 if (value.HeartPoints < 0) errors.Add("event.hpts cannot be negative.");
+                ValidateOptionalSignature(value.ExpectedSignature, "event.esig", errors);
                 break;
             case BellMutation value:
                 ValidateCell(value.BuildingTileX, value.BuildingTileY, errors);
@@ -273,6 +275,11 @@ public static class MutationValidator
     static void ValidateGid(string value, List<string> errors)
     {
         if (string.IsNullOrWhiteSpace(value)) errors.Add("event.g must not be blank.");
+    }
+
+    static void ValidateOptionalSignature(string? value, string name, List<string> errors)
+    {
+        if (value is not null && string.IsNullOrWhiteSpace(value)) errors.Add($"{name} must not be blank when present.");
     }
 
     static void ValidateFinite(double value, string name, List<string> errors)
