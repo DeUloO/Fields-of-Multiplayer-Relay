@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using LiteNetLib;
 using MomiMpRelay.FileSystem;
@@ -137,9 +139,39 @@ public sealed class RelayClient
                     continue;
                 }
                 if (message is RelayStateUpdate update)
+                {
+                    try
+                    {
+                        //TODO: Save these states to sqlite once durable events in place.
+                        foreach (var player in GetPlayerStates(update.Payload))
+                            CurrentMutationParser.ParseEvents(player);
+                    }
+                    catch (JsonException ex)
+                    {
+                        RelayLogger.Error($"[CLIENT] Rejected invalid mutation state from host: {ex.Message}");
+                        continue;
+                    }
+
                     await File.WriteAllTextAsync(_remotePath, update.ToJson().ToJsonString(), ct);
+                }
             }
         }
         catch (OperationCanceledException) { }
+    }
+
+    static IEnumerable<JsonObject> GetPlayerStates(JsonObject payload)
+    {
+        if (payload["players"] is null)
+            yield break;
+
+        if (payload["players"] is not JsonArray players)
+            throw new JsonException("Relay state players must be an array.");
+
+        foreach (var node in players)
+        {
+            if (node is not JsonObject player)
+                throw new JsonException("Relay state players must contain objects.");
+            yield return player;
+        }
     }
 }

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using LiteNetLib;
 using MomiMpRelay.FileSystem;
@@ -108,6 +109,15 @@ public sealed class RelayHost
                     var state = PlayerState.Parse(raw);
                     if (state is not null)
                     {
+                        try
+                        {
+                            CurrentMutationParser.ParseEvents(state.Payload);
+                        }
+                        catch (JsonException ex)
+                        {
+                            RelayLogger.Error($"[HOST] Rejected invalid local mutation state: {ex.Message}");
+                            continue;
+                        }
                         hostPid = state.PlayerId;
                         states[state.PlayerId] = state.Payload;
                         await RelayFileStore.WriteRemoteAsync(_remotePath, BuildRemoteJson(states, hostPid), writeLock, ct);
@@ -153,6 +163,15 @@ public sealed class RelayHost
                     }
                     if (message is not PlayerState state)
                         continue;
+                    try
+                    {
+                        CurrentMutationParser.ParseEvents(state.Payload);
+                    }
+                    catch (JsonException ex)
+                    {
+                        RelayLogger.Error($"[HOST] Rejected invalid mutation state from {session.Peer.Address}: {ex.Message}");
+                        continue;
+                    }
                     session.PlayerId = state.PlayerId;
                     states[state.PlayerId] = state.Payload;
                     if (hostPid is not null)
