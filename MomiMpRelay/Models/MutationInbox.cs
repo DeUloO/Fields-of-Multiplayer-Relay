@@ -30,16 +30,22 @@ public static class MutationInboxMaterializer
     }
 }
 
-/// <summary>Publishes inbox batches as immutable, atomically-renamed files per the durable file-protocol shape.</summary>
+/// <summary>Publishes the pending inbox batch as one fixed-name, atomically-replaced file.</summary>
+/// <remarks>
+/// GML mods cannot list directory contents (mmapi does not expose file_find_first/next), so
+/// clients cannot discover ranged batch files. A single known filename is used instead; the relay
+/// overwrites it whenever the client's cursor has advanced past what was last published.
+/// </remarks>
 public static class MutationInboxPublisher
 {
+    public const string PendingBatchFileName = "pending-batch.json";
+
     public static string PublishAtomic(string inboxDir, MutationInboxBatch batch)
     {
         ArgumentNullException.ThrowIfNull(batch);
         Directory.CreateDirectory(inboxDir);
 
-        var name = $"batch-{batch.FromRelaySeq:D9}-{batch.ToRelaySeq:D9}.json";
-        var final = Path.Combine(inboxDir, name);
+        var final = Path.Combine(inboxDir, PendingBatchFileName);
         var tmp = final + ".tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(batch, MutationJson.Options));
         File.Move(tmp, final, overwrite: true);

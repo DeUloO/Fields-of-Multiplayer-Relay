@@ -67,7 +67,7 @@ public sealed class MutationInboxTests : IDisposable
     }
 
     [Fact]
-    public void PublishAtomicWritesAnImmutableRangedBatchFile()
+    public void PublishAtomicWritesTheFixedPendingBatchFile()
     {
         Accept(clientSeq: 1, eventId: "p1:e1:1");
         var batch = MutationInboxMaterializer.BuildBatch(_ledger, "session-1", "Farmer|Farm", maxEvents: 10)!;
@@ -75,7 +75,7 @@ public sealed class MutationInboxTests : IDisposable
 
         var path = MutationInboxPublisher.PublishAtomic(inboxDir, batch);
 
-        Assert.Equal("batch-000000001-000000001.json", Path.GetFileName(path));
+        Assert.Equal(MutationInboxPublisher.PendingBatchFileName, Path.GetFileName(path));
         Assert.False(File.Exists(path + ".tmp"));
         var persisted = JsonSerializer.Deserialize<MutationInboxBatch>(File.ReadAllText(path), MutationJson.Options);
         Assert.Equal(1, persisted!.FromRelaySeq);
