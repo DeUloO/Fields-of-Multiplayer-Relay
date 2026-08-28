@@ -55,6 +55,16 @@ public sealed class MutationEventTests
     }
 
     [Fact]
+    public void EnvelopeRejectsUnsupportedProtocolVersion()
+    {
+        var eventValue = JsonSerializer.Deserialize<MutationEvent>(
+            "{\"k\":\"ipk\",\"s\":1,\"loc\":1,\"g\":\"drop\"}", MutationJson.Options)!;
+        var envelope = new MutationEnvelope(1, "session", "player", "epoch", 1, "event", 0, eventValue);
+
+        Assert.NotEmpty(MutationValidator.Validate(envelope));
+    }
+
+    [Fact]
     public void UnknownEventKindIsRejected()
     {
         Assert.Throws<JsonException>(() =>

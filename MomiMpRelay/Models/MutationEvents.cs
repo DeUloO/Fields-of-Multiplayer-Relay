@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using MomiMpRelay.Configuration;
 
 namespace MomiMpRelay.Models;
 
@@ -158,6 +159,27 @@ public sealed record BellMutation(
     [property: JsonPropertyName("oid"), JsonRequired] int ObjectId,
     [property: JsonPropertyName("out"), JsonRequired] bool Outside) : MutationEvent(Sequence, LocationId);
 
+public static class MutationEventKind
+{
+    public static string GetKind(MutationEvent mutation) => mutation switch
+    {
+        SpawnMutation => "spawn",
+        GoneMutation => "gone",
+        HitMutationEvent => "hit",
+        FurnitureSpawnMutation => "fspawn",
+        BuildingSpawnMutation => "bspawn",
+        ContainerInventoryMutation => "cinv",
+        CropStateMutation => "cstate",
+        TerrainGroundKindMutation => "tgk",
+        TerrainWateredMutation => "tw",
+        ItemSpawnMutation => "isp",
+        ItemPickupMutation => "ipk",
+        AnimalStateMutation => "astate",
+        BellMutation => "bell",
+        _ => throw new ArgumentOutOfRangeException(nameof(mutation), "Unknown mutation event kind."),
+    };
+}
+
 public static class MutationValidator
 {
     public static IReadOnlyList<string> Validate(MutationEvent mutation)
@@ -179,7 +201,7 @@ public static class MutationValidator
     {
         ArgumentNullException.ThrowIfNull(envelope);
         var errors = new List<string>();
-        if (envelope.Protocol <= 0) errors.Add("protocol must be positive.");
+        if (envelope.Protocol != RelaySession.ProtocolVersion) errors.Add($"protocol must be {RelaySession.ProtocolVersion}.");
         if (string.IsNullOrWhiteSpace(envelope.SessionId)) errors.Add("sessionId is required.");
         if (string.IsNullOrWhiteSpace(envelope.PlayerId)) errors.Add("playerId is required.");
         if (string.IsNullOrWhiteSpace(envelope.ClientEpoch)) errors.Add("clientEpoch is required.");

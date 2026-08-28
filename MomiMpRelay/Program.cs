@@ -55,6 +55,7 @@ static class Program
         Console.WriteLine($"│  mode : {mode,-51}│");
         Console.WriteLine($"│  port : {port,-51}│");
         Console.WriteLine($"│  dir  : {mpDir,-51}│");
+        Console.WriteLine($"│  session : {RelaySession.SessionId,-48}│");
         Console.WriteLine("└──────────────────────────────────────────────────────────┘");
         Console.WriteLine();
 
