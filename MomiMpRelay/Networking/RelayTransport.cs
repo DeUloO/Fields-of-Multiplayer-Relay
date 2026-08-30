@@ -5,10 +5,10 @@ namespace MomiMpRelay.Networking;
 
 static class RelayTransport
 {
-    public static void Send(NetPeer peer, IRelayMessage message, CancellationToken ct)
+    public static void SendJson(NetPeer peer, JsonIdentifier identifier, IRelayPacket message, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        peer.Send(RelayPacketCodec.EncodeJson(message), DeliveryMethod.ReliableOrdered);
+        peer.Send(RelayPacketCodec.EncodeJson(identifier, message), DeliveryMethod.ReliableOrdered);
     }
 
     public static void SendSnapshotChunk(NetPeer peer, SnapshotFileId fileId, int sequence,
@@ -19,13 +19,13 @@ static class RelayTransport
             bytes.AsSpan(offset, count)), DeliveryMethod.ReliableOrdered);
     }
 
-    public static async Task SendLockedAsync(ClientSession session,
-        IRelayMessage message, CancellationToken ct)
+    public static async Task SendLockedAsync(ClientSession session, JsonIdentifier identifier,
+        IRelayPacket message, CancellationToken ct)
     {
         await session.WriteLock.WaitAsync(ct);
         try
         {
-            Send(session.Peer, message, ct);
+            SendJson(session.Peer, identifier, message, ct);
         }
         finally { session.WriteLock.Release(); }
     }

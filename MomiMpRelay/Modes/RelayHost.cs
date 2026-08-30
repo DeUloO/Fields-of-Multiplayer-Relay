@@ -35,7 +35,7 @@ public sealed class RelayHost
 
     public async Task<int> RunAsync(CancellationToken ct)
     {
-        var states = new ConcurrentDictionary<string, JsonObject>();
+        var states = new ConcurrentDictionary<string, PlayerState>();
         var sessions = new ConcurrentDictionary<ClientSession, byte>();
         using var writeLock = new SemaphoreSlim(1, 1);
         using var snapshotLock = new SemaphoreSlim(1, 1);
@@ -47,7 +47,7 @@ public sealed class RelayHost
         {
             foreach (var (session, _) in sessions)
                 if (session.PlayerId is { } pid)
-                    if (!session.Push(new RelayStateUpdate(JsonNode.Parse(BuildRemoteJson(states, pid))!.AsObject())))
+                    if (!session.Push(new RelayPacketKind.Json(JsonIdentifier.player_id), new RelayStateUpdate(states, pid)))
                         RelayLogger.Error($"[HOST] Outbox full for {session.Peer.Address}; state update dropped.");
         }
         void Refresh() => _reporter.Set("listening", "host", sessions.Count);
@@ -103,19 +103,23 @@ public sealed class RelayHost
         RelayLogger.Info($"[HOST] Listening on :{_port}");
         try
         {
-            string? last = null;
+            byte[]? lastHash = null;
             while (!ct.IsCancellationRequested)
             {
-                var raw = await RelayFileStore.ReadTextSharedAsync(_outPath, ct);
-                if (raw is not null && raw != last)
+                var hash = await RelayFileStore.GetSha256Async(_outPath, ct);
+                if (!hash.SequenceEqual(lastHash))
                 {
-                    last = raw;
-                    var state = PlayerState.Parse(raw);
+                    var raw = await RelayFileStore.ReadTextSharedAsync(_outPath, ct);
+                    lastHash = hash;
+                    var state = JsonSerializer.Deserialize<PlayerState>(raw ?? string.Empty);
                     if (state is not null)
                     {
                         try
                         {
-                            CurrentMutationParser.ParseEvents(state.Payload);
+                            foreach (var ev in state.Events)
+                            {
+                                MutationValidator.EnsureValid(ev);
+                            }
                         }
                         catch (JsonException ex)
                         {
@@ -123,8 +127,8 @@ public sealed class RelayHost
                             continue;
                         }
                         hostPid = state.PlayerId;
-                        states[state.PlayerId] = state.Payload;
-                        await RelayFileStore.WriteRemoteAsync(_remotePath, BuildRemoteJson(states, hostPid), writeLock, ct);
+                        states[state.PlayerId] = state;
+                        await RelayFileStore.WriteRemoteAsync(_remotePath, JsonSerializer.Serialize(new RelayStateUpdate(states, hostPid)), writeLock, ct);
                         PushToAll();
                     }
                 }
@@ -168,9 +172,9 @@ public sealed class RelayHost
             {
                 await foreach (var packet in session.Inbox.Reader.ReadAllAsync(token))
                 {
-                    if (packet.Kind != RelayPacketKind.Json)
+                    if (packet.Kind.Type != RelayPacketKindType.Json)
                         continue;
-                    var message = RelayMessageParser.Parse(Encoding.UTF8.GetString(packet.Data));
+                    var message = RelayMessageParser.Parse(packet);
                     if (message is SnapshotRequest)
                     {
                         await SendSnapshot(session, token);
@@ -180,7 +184,8 @@ public sealed class RelayHost
                         continue;
                     try
                     {
-                        CurrentMutationParser.ParseEvents(state.Payload);
+                        foreach (var ev in state.Events)
+                            MutationValidator.EnsureValid(ev);
                     }
                     catch (JsonException ex)
                     {
@@ -188,9 +193,9 @@ public sealed class RelayHost
                         continue;
                     }
                     session.PlayerId = state.PlayerId;
-                    states[state.PlayerId] = state.Payload;
+                    states[state.PlayerId] = state;
                     if (hostPid is not null)
-                        await RelayFileStore.WriteRemoteAsync(_remotePath, BuildRemoteJson(states, hostPid), writeLock, token);
+                        await RelayFileStore.WriteRemoteAsync(_remotePath, JsonSerializer.Serialize(new RelayStateUpdate(states, hostPid)), writeLock, token);
                     PushToAll();
                 }
             }
@@ -232,19 +237,19 @@ public sealed class RelayHost
             await SendFile(session, "world_snapshot.json", world, token);
             if (terrain is not null)
                 await SendFile(session, "world_farm_terrain.bin", terrain, token);
-            await RelayTransport.SendLockedAsync(session, new SnapshotDone(), token);
+            await RelayTransport.SendLockedAsync(session, JsonIdentifier.snap_done, new SnapshotDone(), token);
         }
         async Task SendFile(ClientSession session, string name, byte[] bytes, CancellationToken token)
         {
             var id = name == "world_snapshot.json" ? SnapshotFileId.World : SnapshotFileId.Terrain;
             var total = (bytes.Length + ChunkBytes - 1) / ChunkBytes;
-            await RelayTransport.SendLockedAsync(session, new SnapshotBegin(name, total, bytes.Length), token);
+            await RelayTransport.SendLockedAsync(session, JsonIdentifier.snap_begin, new SnapshotBegin(name, total, bytes.Length), token);
             for (var i = 0; i < total; i++)
             {
                 var offset = i * ChunkBytes;
                 await RelayTransport.SendLockedSnapshotChunkAsync(session, id, i, bytes, offset, Math.Min(ChunkBytes, bytes.Length - offset), token);
             }
-            await RelayTransport.SendLockedAsync(session, new SnapshotEnd(name), token);
+            await RelayTransport.SendLockedAsync(session, JsonIdentifier.snap_end, new SnapshotEnd(name), token);
         }
         static async Task WriteLoop(ClientSession session, CancellationToken token)
         {
@@ -252,21 +257,10 @@ public sealed class RelayHost
             {
                 await foreach (var message in session.Outbox.Reader.ReadAllAsync(token))
                 {
-                    await RelayTransport.SendLockedAsync(session, message, token);
+                    await RelayTransport.SendLockedAsync(session, ((RelayPacketKind.Json)message.Kind).Identifier, message.Packet, token);
                 }
             }
             catch (OperationCanceledException) { }
         }
-    }
-
-    static string BuildRemoteJson(ConcurrentDictionary<string, JsonObject> states, string? exclude)
-    {
-        var players = new JsonArray();
-        foreach (var (pid, state) in states)
-        {
-            if (pid != exclude)
-                players.Add(state.DeepClone());
-        }
-        return new JsonObject { ["players"] = players }.ToJsonString();
     }
 }

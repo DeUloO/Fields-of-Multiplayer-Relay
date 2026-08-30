@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Unicode;
 using System.Threading.Channels;
 using LiteNetLib;
 using MomiMpRelay.FileSystem;
@@ -53,7 +54,7 @@ public sealed class RelayClient
                     using var link = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     if (!requestedSnapshot)
                     {
-                        RelayTransport.Send(peer, new SnapshotRequest(), link.Token);
+                        RelayTransport.SendJson(peer, JsonIdentifier.snap_req, new SnapshotRequest(), link.Token);
                         requestedSnapshot = true;
                     }
                     var send = SendLoop(peer, link.Token);
@@ -104,12 +105,12 @@ public sealed class RelayClient
                         File.Delete(resync);
                     }
                     catch { }
-                    RelayTransport.Send(peer, new SnapshotRequest(), ct);
+                    RelayTransport.SendJson(peer, JsonIdentifier.snap_req, new SnapshotRequest(), ct);
                 }
-                var raw = await RelayFileStore.ReadTextSharedAsync(_outPath, ct);
-                var state = raw is null ? null : PlayerState.Parse(raw);
+                var raw = await RelayFileStore.ReadTextSharedAsync(_outPath, ct) ?? string.Empty;
+                var state = JsonSerializer.Deserialize<PlayerState>(raw);
                 if (state is not null)
-                    RelayTransport.Send(peer, state, ct);
+                    RelayTransport.SendJson(peer, JsonIdentifier.player_id, state, ct);
                 await Task.Delay(PollMs, ct);
             }
             catch (OperationCanceledException) { return; }
@@ -124,15 +125,15 @@ public sealed class RelayClient
         {
             await foreach (var packet in messages.ReadAllAsync(ct))
             {
-                if (packet.Kind == RelayPacketKind.SnapshotChunk)
+                if (packet.Kind.Type == RelayPacketKindType.SnapshotChunk)
                 {
                     if (RelayPacketCodec.TryDecodeSnapshotChunk(packet, out var chunk))
                         await snap.HandleChunkAsync(chunk.FileId, chunk.Sequence, chunk.Data, ct);
                     continue;
                 }
-                if (packet.Kind != RelayPacketKind.Json)
+                if (packet.Kind.Type != RelayPacketKindType.Json)
                     continue;
-                var message = RelayMessageParser.Parse(Encoding.UTF8.GetString(packet.Data));
+                var message = RelayMessageParser.Parse(packet);
                 if (message is IMpControlMessage control)
                 {
                     await snap.HandleAsync(control, ct);
@@ -143,8 +144,9 @@ public sealed class RelayClient
                     try
                     {
                         //TODO: Save these states to sqlite once durable events in place.
-                        foreach (var player in GetPlayerStates(update.Payload))
-                            CurrentMutationParser.ParseEvents(player);
+                        foreach (var player in update.States)
+                            foreach (var ev in player.Events)
+                                MutationValidator.EnsureValid(ev);
                     }
                     catch (JsonException ex)
                     {
@@ -152,7 +154,7 @@ public sealed class RelayClient
                         continue;
                     }
 
-                    await File.WriteAllTextAsync(_remotePath, update.ToJson().ToJsonString(), ct);
+                    await File.WriteAllTextAsync(_remotePath, Encoding.UTF8.GetString(packet.Data), ct);
                 }
             }
         }

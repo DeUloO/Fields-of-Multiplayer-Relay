@@ -9,7 +9,7 @@ sealed class ClientSession : IDisposable
     public readonly NetPeer Peer;
     public volatile string? PlayerId;
 
-    public readonly Channel<IRelayMessage> Outbox = Channel.CreateBounded<IRelayMessage>(
+    public readonly Channel<(RelayPacketKind Kind, IRelayPacket Packet)> Outbox = Channel.CreateBounded<(RelayPacketKind Kind, IRelayPacket Packet)>(
         new BoundedChannelOptions(2) { FullMode = BoundedChannelFullMode.DropOldest });
 
     public readonly Channel<RelayPacket> Inbox = Channel.CreateBounded<RelayPacket>(
@@ -18,7 +18,7 @@ sealed class ClientSession : IDisposable
 
     public ClientSession(NetPeer peer) => Peer = peer;
 
-    public bool Push(IRelayMessage message) => Outbox.Writer.TryWrite(message);
+    public bool Push(RelayPacketKind kind, IRelayPacket message) => Outbox.Writer.TryWrite((kind, message));
 
     public void Dispose()
     {

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -9,10 +10,17 @@ public static class RelayProtocol
     public const string ConnectionKey = "momi-mp";
 }
 
-public enum RelayPacketKind : byte
+public enum RelayPacketKindType : byte
 {
     Json = 1,
     SnapshotChunk = 2,
+}
+public record RelayPacketKind
+{
+    public RelayPacketKindType Type { get; init; }
+    protected RelayPacketKind(RelayPacketKindType type) => Type = type;
+    public record Json(JsonIdentifier Identifier) : RelayPacketKind(RelayPacketKindType.Json);
+    public record SnapshotChunk(SnapshotFileId FileId, int Sequence) : RelayPacketKind(RelayPacketKindType.SnapshotChunk);
 }
 
 public readonly record struct RelayPacket(RelayPacketKind Kind, byte[] Data);
@@ -21,6 +29,16 @@ public enum SnapshotFileId : byte
 {
     World = 1,
     Terrain = 2,
+}
+
+public enum JsonIdentifier : byte
+{
+    player_id,
+    players,
+    snap_req,
+    snap_done,
+    snap_begin,
+    snap_end,
 }
 
 public readonly record struct SnapshotChunk(SnapshotFileId FileId, int Sequence, byte[] Data);
@@ -69,7 +87,7 @@ sealed class RelayControlJsonConverter : JsonConverter<RelayControl>
     }
 
     public override void Write(Utf8JsonWriter writer, RelayControl value,
-        JsonSerializerOptions options) => throw new NotSupportedException();
+        JsonSerializerOptions options) => throw new NotSupportedException(); // File is written by GML, only need to support read.
 
     static int ReadInt(JsonElement root, string propertyName)
     {
@@ -96,125 +114,63 @@ sealed class RelayControlJsonConverter : JsonConverter<RelayControl>
     }
 }
 
-public interface IRelayMessage
+public interface IRelayPacket {};
+public interface IMpControlMessage : IRelayPacket {};
+
+public sealed record SnapshotRequest() : IMpControlMessage;
+
+public sealed record SnapshotDone() : IMpControlMessage;
+
+public sealed record SnapshotBegin(string Name, int Chunks, int Bytes) : IMpControlMessage;
+
+public sealed record SnapshotEnd(string Name) : IMpControlMessage;
+
+public sealed record PlayerState() : IRelayPacket
 {
-    string Identifier
-    {
-        get;
-    }
-    JsonObject ToJson();
+    [JsonPropertyName("player_id")] 
+    public required string PlayerId { get; init; }
+
+    [JsonPropertyName("evs")] 
+    public List<MutationEvent> Events { get; init; } = [];
 }
 
-public interface IMpControlMessage : IRelayMessage
+public sealed record RelayStateUpdate : IRelayPacket
 {
-    string MpMessage
+    [JsonPropertyName("players")]
+    public List<PlayerState> States { get; init; } = [];
+    public RelayStateUpdate() {}
+    public RelayStateUpdate(ConcurrentDictionary<string, PlayerState> states, string? exclude)
     {
-        get;
-    }
-}
-
-public abstract record MpControlMessage : IMpControlMessage
-{
-    protected MpControlMessage(string mpMessage) => MpMessage = mpMessage;
-
-    [JsonPropertyName("mp_msg")]
-    public string MpMessage
-    {
-        get;
-    }
-
-    [JsonIgnore]
-    public string Identifier => MpMessage;
-
-    public JsonObject ToJson() =>
-        JsonSerializer.SerializeToNode(this, GetType())!.AsObject();
-}
-
-public sealed record SnapshotRequest : MpControlMessage
-{
-    public SnapshotRequest() : base("snap_req") { }
-}
-
-public sealed record SnapshotDone : MpControlMessage
-{
-    public SnapshotDone() : base("snap_done") { }
-}
-
-public sealed record SnapshotBegin(
-    [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("chunks")] int Chunks,
-    [property: JsonPropertyName("bytes")] int Bytes) : MpControlMessage("snap_begin");
-
-public sealed record SnapshotEnd(
-    [property: JsonPropertyName("name")] string Name) : MpControlMessage("snap_end");
-
-public sealed record PlayerState(string PlayerId, JsonObject Payload) : IRelayMessage
-{
-    public string Identifier => "player_id";
-    public JsonObject ToJson() => Payload;
-
-    public static PlayerState? Parse(string json)
-    {
-        try
-        {
-            var payload = JsonNode.Parse(json)?.AsObject();
-            return payload is null ? null : Parse(payload);
-        }
-        catch { return null; }
-    }
-
-    public static PlayerState? Parse(JsonObject payload)
-    {
-        var playerId = payload["player_id"]?.GetValue<string>();
-        return string.IsNullOrWhiteSpace(playerId) ? null : new PlayerState(playerId, payload);
+        States = states.Values.Where(s => s.PlayerId != exclude).ToList();
     }
 }
 
-public sealed record RelayStateUpdate(JsonObject Payload) : IRelayMessage
-{
-    public string Identifier => "players";
-    public JsonObject ToJson() => Payload;
-}
+// Client -> Host: raw outbox entries this client hasn't had acknowledged yet.
+public sealed record MutationBatchUpload(JsonElement[] Entries) : IRelayPacket;
+
+// Host -> Client: an ack for the client's own outbox (mirrors MutationOutboxAck).
+public sealed record MutationBatchUploadAck(MutationOutboxAck Ack) : IRelayPacket;
+
+// Host -> Client: a canonical inbox batch (mirrors MutationInboxBatch).
+public sealed record MutationBatchDownload(MutationInboxBatch Batch) : IRelayPacket;
 
 public static class RelayMessageParser
 {
-    public static IRelayMessage? Parse(string json)
+    public static IRelayPacket? Parse(RelayPacket packet)
     {
         try
         {
-            var node = JsonNode.Parse(json)?.AsObject();
-            return node is null ? null : Parse(node);
+            switch ((packet.Kind as RelayPacketKind.Json)?.Identifier)
+            {
+                case JsonIdentifier.snap_req: return JsonSerializer.Deserialize<SnapshotRequest>(packet.Data);
+                case JsonIdentifier.snap_done: return JsonSerializer.Deserialize<SnapshotDone>(packet.Data);
+                case JsonIdentifier.snap_begin: return JsonSerializer.Deserialize<SnapshotBegin>(packet.Data);
+                case JsonIdentifier.snap_end: return JsonSerializer.Deserialize<SnapshotEnd>(packet.Data);
+                case JsonIdentifier.player_id: return JsonSerializer.Deserialize<PlayerState>(packet.Data);
+                case JsonIdentifier.players: return JsonSerializer.Deserialize<RelayStateUpdate>(packet.Data);
+                default: return null;
+            }
         }
         catch { return null; }
     }
-
-    public static IRelayMessage? Parse(JsonObject node)
-    {
-        if (node["mp_msg"] is not null)
-            return ParseControl(node);
-        if (node["player_id"] is not null)
-            return PlayerState.Parse(node);
-        if (node["players"] is not null)
-            return new RelayStateUpdate(node);
-        return null;
-    }
-
-    public static IMpControlMessage? ParseControl(string json)
-    {
-        try
-        {
-            var node = JsonNode.Parse(json)?.AsObject();
-            return node is null ? null : ParseControl(node);
-        }
-        catch { return null; }
-    }
-
-    static IMpControlMessage? ParseControl(JsonObject node) => node["mp_msg"]?.GetValue<string>() switch
-    {
-        "snap_req" => node.Deserialize<SnapshotRequest>(),
-        "snap_done" => node.Deserialize<SnapshotDone>(),
-        "snap_begin" => node.Deserialize<SnapshotBegin>(),
-        "snap_end" => node.Deserialize<SnapshotEnd>(),
-        _ => null,
-    };
 }
