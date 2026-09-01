@@ -119,6 +119,25 @@ public sealed class RelayClient
                 {
                     RelayTransport.SendJson(peer, JsonIdentifier.mutation_batch_upload, new MutationBatchUpload(unacknowledged), ct);
                 }
+                var repairRequestPath = Path.Combine(_mpDir, "mp_repair_request.json");
+                if (File.Exists(repairRequestPath))
+                {
+                    try
+                    {
+                        var repairRaw = await RelayFileStore.ReadTextSharedAsync(repairRequestPath, ct);
+                        var request = repairRaw is null ? null : JsonSerializer.Deserialize<RepairRequest>(repairRaw);
+                        if (request is not null)
+                            RelayTransport.SendJson(peer, JsonIdentifier.repair_request, request, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        RelayLogger.Error($"[CLIENT] repair request: {ex.Message}");
+                    }
+                    finally
+                    {
+                        try { File.Delete(repairRequestPath); } catch { }
+                    }
+                }
 
                 await Task.Delay(PollMs, ct);
             }

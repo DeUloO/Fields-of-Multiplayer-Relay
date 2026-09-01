@@ -42,6 +42,7 @@ public enum JsonIdentifier : byte
     mutation_batch_upload,
     mutation_batch_upload_ack,
     mutation_batch_download,
+    repair_request,
 }
 
 public readonly record struct SnapshotChunk(SnapshotFileId FileId, int Sequence, byte[] Data);
@@ -157,6 +158,12 @@ public sealed record MutationBatchUploadAck(MutationOutboxAck Ack) : IRelayPacke
 // Host -> Client: a canonical inbox batch (mirrors MutationInboxBatch).
 public sealed record MutationBatchDownload(MutationInboxBatch Batch) : IRelayPacket;
 
+// Client -> Host: this client's inbox is stuck on a persistent gap; resync it from reportedCursor.
+public sealed record RepairRequest(
+    [property: JsonPropertyName("playerId")] string PlayerId,
+    [property: JsonPropertyName("reportedCursor")] long ReportedCursor,
+    [property: JsonPropertyName("reason")] string Reason) : IRelayPacket;
+
 public static class RelayMessageParser
 {
     public static IRelayPacket? Parse(RelayPacket packet)
@@ -174,6 +181,7 @@ public static class RelayMessageParser
                 case JsonIdentifier.mutation_batch_upload: return JsonSerializer.Deserialize<MutationBatchUpload>(packet.Data);
                 case JsonIdentifier.mutation_batch_upload_ack: return JsonSerializer.Deserialize<MutationBatchUploadAck>(packet.Data);
                 case JsonIdentifier.mutation_batch_download: return JsonSerializer.Deserialize<MutationBatchDownload>(packet.Data);
+                case JsonIdentifier.repair_request: return JsonSerializer.Deserialize<RepairRequest>(packet.Data);
                 default: return null;
             }
         }

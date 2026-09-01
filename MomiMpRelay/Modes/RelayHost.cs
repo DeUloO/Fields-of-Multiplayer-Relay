@@ -17,6 +17,7 @@ public sealed class RelayHost
     const int PollMs = 50;
     const int ChunkBytes = 900;
     const int SnapshotTimeoutMs = 20_000;
+    const string RepairRequestFileName = "mp_repair_request.json";
 
     readonly int _port;
     readonly string _mpDir;
@@ -158,6 +159,31 @@ public sealed class RelayHost
                 MutationOutboxIngestor.Ingest(outboxDir, ledger);
                 if (hostPid is not null)
                 {
+                    var repairRequestPath = Path.Combine(_mpDir, RepairRequestFileName);
+                    if (File.Exists(repairRequestPath))
+                    {
+                        try
+                        {
+                            var raw = await File.ReadAllTextAsync(repairRequestPath, ct);
+                            var request = JsonSerializer.Deserialize<RepairRequest>(raw);
+                            if (request is not null)
+                            {
+                                ledger.RecordClientCursor(hostPid, request.PlayerId, request.ReportedCursor);
+                                ledger.RecordRepairRequest(hostPid, request.PlayerId, request.Reason, request.ReportedCursor);
+                                hostLastRelaySeq = -1;
+                                RelayLogger.Info($"[HOST] Repair requested locally by {request.PlayerId} ({request.Reason}) at cursor {request.ReportedCursor}; forcing resync.");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            RelayLogger.Error($"[HOST] Failed to process local repair request: {ex.Message}");
+                        }
+                        finally
+                        {
+                            try { File.Delete(repairRequestPath); } catch { }
+                        }
+                    }
+
                     if (ledger.GetHeadRelaySeq(hostPid) != hostLastRelaySeq)
                     {
                         var batch = MutationInboxMaterializer.BuildBatch(ledger, hostPid, hostPid, maxEvents: 500);
@@ -227,6 +253,9 @@ public sealed class RelayHost
                             continue;
                         case MutationBatchUpload batch:
                             await HandleMutationBatchUpload(batch, ledger, session, token);
+                            continue;
+                        case RepairRequest request:
+                            HandleRepairRequest(request, ledger, hostPid, session);
                             continue;
                     }
 
@@ -316,8 +345,7 @@ public sealed class RelayHost
         }
 
         static async Task HandleMutationBatchUpload(MutationBatchUpload batch, MutationLedger ledger, ClientSession session, CancellationToken token)
-        {
-            try
+        {            try
             {
                 int accepted = 0, duplicates = 0;
                 MutationEnvelope? last = null;
@@ -343,6 +371,16 @@ public sealed class RelayHost
             {
                 RelayLogger.Error($"[HOST] Failed to handle mutation batch upload: {ex.Message}");
             }
+        }
+
+        static void HandleRepairRequest(RepairRequest request, MutationLedger ledger, string? hostPid, ClientSession session)
+        {
+            if (string.IsNullOrWhiteSpace(hostPid))
+                return;
+            ledger.RecordClientCursor(hostPid, request.PlayerId, request.ReportedCursor);
+            ledger.RecordRepairRequest(hostPid, request.PlayerId, request.Reason, request.ReportedCursor);
+            session.LastPublishedRelaySeq = -1;
+            RelayLogger.Info($"[HOST] Repair requested by {request.PlayerId} ({request.Reason}) at cursor {request.ReportedCursor}; forcing resync.");
         }
     }
 }

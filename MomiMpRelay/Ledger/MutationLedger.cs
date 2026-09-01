@@ -9,6 +9,8 @@ namespace MomiMpRelay.Ledger;
 
 public sealed record MutationAcceptResult(long RelaySeq, bool IsDuplicate);
 
+public sealed record RepairRequestRecord(string PlayerId, string Reason, long ReportedCursor, string RequestedAtUtc);
+
 /// <summary>Durable, transactionally-sequenced record of accepted mutation events for one relay session.</summary>
 public sealed class MutationLedger : IDisposable
 {
@@ -58,6 +60,7 @@ public sealed class MutationLedger : IDisposable
             session_id       TEXT    NOT NULL,
             player_id        TEXT    NOT NULL,
             reason           TEXT    NOT NULL,
+            reported_cursor  INTEGER NOT NULL DEFAULT 0,
             requested_at_utc TEXT    NOT NULL
         );
         """;
@@ -232,6 +235,36 @@ public sealed class MutationLedger : IDisposable
                 new { sessionId, playerId, relaySeq, updatedAtUtc = DateTime.UtcNow.ToString("o") }, transaction);
 
             transaction.Commit();
+        }
+    }
+
+    /// <summary>Durably logs a client-reported inbox repair request for diagnostics.</summary>
+    public void RecordRepairRequest(string sessionId, string playerId, string reason, long reportedCursor)
+    {
+        lock (_sync)
+        {
+            _connection.Execute(
+                """
+                INSERT INTO repair_requests (session_id, player_id, reason, reported_cursor, requested_at_utc)
+                VALUES (@sessionId, @playerId, @reason, @reportedCursor, @requestedAtUtc)
+                """,
+                new { sessionId, playerId, reason, reportedCursor, requestedAtUtc = DateTime.UtcNow.ToString("o") });
+        }
+    }
+
+    public IReadOnlyList<RepairRequestRecord> GetRepairRequests(string sessionId, int maxCount = 100)
+    {
+        lock (_sync)
+        {
+            return _connection.Query<RepairRequestRecord>(
+                """
+                SELECT player_id AS PlayerId, reason AS Reason, reported_cursor AS ReportedCursor, requested_at_utc AS RequestedAtUtc
+                FROM repair_requests
+                WHERE session_id = @sessionId
+                ORDER BY id DESC
+                LIMIT @maxCount
+                """,
+                new { sessionId, maxCount }).ToList();
         }
     }
 
