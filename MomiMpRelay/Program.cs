@@ -47,6 +47,8 @@ static class Program
         Directory.CreateDirectory(mpDir);
         RelayFileStore.CleanupTemporaryFiles(mpDir);
         string outPath = Path.Combine(mpDir, "out.json");
+        string outboxDir = Path.Combine(mpDir, "outbox");
+        string inboxDir = Path.Combine(mpDir, "inbox");
         string remotePath = Path.Combine(mpDir, "remote.json");
 
         using var cts = new CancellationTokenSource();
@@ -62,10 +64,10 @@ static class Program
         var reporter = new StatusReporter(mpDir);
         var statusTask = Task.Run(() => reporter.RunAsync(cts.Token), cts.Token);
         var host = new RelayHost(port, mpDir, outPath, remotePath, reporter);
-        var client = connectHost is null ? null : new RelayClient(connectHost, port, mpDir, outPath, remotePath, reporter);
+        var client = connectHost is null ? null : new RelayClient(connectHost, port, mpDir, outPath, outboxDir, inboxDir, remotePath, reporter);
         var auto = new AutoRelay(port, mpDir, remotePath, reporter, ReadControlAsync,
             (modePort, token) => new RelayHost(modePort, mpDir, outPath, remotePath, reporter).RunAsync(token),
-            (hostName, modePort, token) => new RelayClient(hostName, modePort, mpDir, outPath, remotePath, reporter).RunAsync(token));
+            (hostName, modePort, token) => new RelayClient(hostName, modePort, mpDir, outPath, outboxDir, inboxDir, remotePath, reporter).RunAsync(token));
 
         int exitCode = 0;
         bool errored = false;

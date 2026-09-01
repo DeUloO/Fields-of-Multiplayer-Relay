@@ -18,6 +18,7 @@ public sealed record MutationOutboxIngestResult(int Accepted, int Duplicates, in
 public static class MutationOutboxIngestor
 {
     public const string AckFileName = "producer-ack.json";
+    public static long LastAckSeq { get; private set; } = 0L;
 
     public static MutationOutboxIngestResult Ingest(string outboxDir, MutationLedger ledger)
     {
@@ -34,13 +35,10 @@ public static class MutationOutboxIngestor
 
         foreach (var segment in segments)
         {
-            JsonElement[] entries;
+            MutationEnvelope[] entries;
             try
             {
-                using var document = JsonDocument.Parse(File.ReadAllText(segment));
-                entries = document.RootElement.ValueKind == JsonValueKind.Array
-                    ? [.. document.RootElement.EnumerateArray().Select(e => e.Clone())]
-                    : [];
+                entries = JsonSerializer.Deserialize<MutationEnvelope[]>(File.ReadAllBytes(segment)) ?? [];
             }
             catch (IOException)
             {
@@ -54,10 +52,9 @@ public static class MutationOutboxIngestor
 
             foreach (var entry in entries)
             {
-                MutationEnvelope envelope;
                 try
                 {
-                    envelope = MutationJson.DeserializeAndValidate(entry.GetRawText());
+                    MutationValidator.EnsureValid(entry);
                 }
                 catch (JsonException)
                 {
@@ -65,11 +62,11 @@ public static class MutationOutboxIngestor
                     continue;
                 }
 
-                var result = ledger.Accept(envelope);
+                var result = ledger.Accept(entry);
                 if (result.IsDuplicate) duplicates++; else accepted++;
 
-                last = envelope;
-                if (envelope.ClientSeq > maxClientSeq) maxClientSeq = envelope.ClientSeq;
+                last = entry;
+                if (entry.ClientSeq > maxClientSeq) maxClientSeq = entry.ClientSeq;
             }
         }
 
@@ -83,11 +80,44 @@ public static class MutationOutboxIngestor
         return new MutationOutboxIngestResult(accepted, duplicates, malformed, ack);
     }
 
-    static void WriteAckAtomic(string outboxDir, MutationOutboxAck ack)
+    public static MutationEnvelope[] GetUnacknowledged(string outboxDir)
+    {
+        var segments = Directory.GetFiles(outboxDir, "segment-*.json")
+            .OrderBy(path => path, StringComparer.Ordinal);
+
+        var unacknowledged = new List<MutationEnvelope>();
+        foreach (var segment in segments)
+        {
+            MutationEnvelope[] entries;
+            try
+            {
+                entries = JsonSerializer.Deserialize<MutationEnvelope[]>(File.ReadAllBytes(segment)) ?? [];
+            }
+            catch (IOException)
+            {
+                continue; // still being written; retried on the next ingestion pass
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            foreach (var entry in entries)
+            {
+                if (entry.ClientSeq > LastAckSeq)
+                    unacknowledged.Add(entry);
+            }
+        }
+
+        return unacknowledged.ToArray();
+    }
+
+    public static void WriteAckAtomic(string outboxDir, MutationOutboxAck ack)
     {
         var final = Path.Combine(outboxDir, AckFileName);
         var tmp = final + ".tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(ack, MutationJson.Options));
         File.Move(tmp, final, overwrite: true);
+        LastAckSeq = ack.RelayHeadSeq;
     }
 }

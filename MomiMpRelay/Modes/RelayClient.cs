@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices.Marshalling;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -16,13 +17,15 @@ namespace MomiMpRelay.Modes;
 public sealed class RelayClient
 {
     const int PollMs = 50, ReconnectDelayMs = 3000;
-    readonly string _host, _mpDir, _outPath, _remotePath; readonly int _port; readonly StatusReporter _reporter;
-    public RelayClient(string host, int port, string mpDir, string outPath, string remotePath, StatusReporter reporter)
+    readonly string _host, _mpDir, _outPath, _outboxDir, _inboxDir, _remotePath; readonly int _port; readonly StatusReporter _reporter;
+    public RelayClient(string host, int port, string mpDir, string outPath, string outboxDir, string inboxDir, string remotePath, StatusReporter reporter)
     {
         _host = host;
         _port = port;
         _mpDir = mpDir;
         _outPath = outPath;
+        _outboxDir = outboxDir;
+        _inboxDir = inboxDir;
         _remotePath = remotePath;
         _reporter = reporter;
     }
@@ -111,6 +114,12 @@ public sealed class RelayClient
                 var state = JsonSerializer.Deserialize<PlayerState>(raw);
                 if (state is not null)
                     RelayTransport.SendJson(peer, JsonIdentifier.player_id, state, ct);
+                var unacknowledged = MutationOutboxIngestor.GetUnacknowledged(_outboxDir);
+                if (unacknowledged.Length > 0)
+                {
+                    RelayTransport.SendJson(peer, JsonIdentifier.mutation_batch_upload, new MutationBatchUpload(unacknowledged), ct);
+                }
+
                 await Task.Delay(PollMs, ct);
             }
             catch (OperationCanceledException) { return; }
@@ -134,46 +143,51 @@ public sealed class RelayClient
                 if (packet.Kind.Type != RelayPacketKindType.Json)
                     continue;
                 var message = RelayMessageParser.Parse(packet);
-                if (message is IMpControlMessage control)
+                switch (message)
                 {
-                    await snap.HandleAsync(control, ct);
-                    continue;
-                }
-                if (message is RelayStateUpdate update)
-                {
-                    try
-                    {
-                        //TODO: Save these states to sqlite once durable events in place.
-                        foreach (var player in update.States)
-                            foreach (var ev in player.Events)
-                                MutationValidator.EnsureValid(ev);
-                    }
-                    catch (JsonException ex)
-                    {
-                        RelayLogger.Error($"[CLIENT] Rejected invalid mutation state from host: {ex.Message}");
-                        continue;
-                    }
-
-                    await File.WriteAllTextAsync(_remotePath, Encoding.UTF8.GetString(packet.Data), ct);
+                    case IMpControlMessage control:
+                        await snap.HandleAsync(control, ct);
+                        break;
+                    case RelayStateUpdate update:
+                        await HandleRelayStateUpdate(update, packet, ct);
+                        break;
+                    case MutationBatchUploadAck ack:
+                        HandleMutationBatchUploadAck(ack.Ack);
+                        break;
+                    case MutationBatchDownload batch:
+                        HandleMutationBatchDownload(batch.Batch);
+                        break;
                 }
             }
         }
         catch (OperationCanceledException) { }
     }
 
-    static IEnumerable<JsonObject> GetPlayerStates(JsonObject payload)
+    void HandleMutationBatchUploadAck(MutationOutboxAck ack)
     {
-        if (payload["players"] is null)
-            yield break;
+        MutationOutboxIngestor.WriteAckAtomic(_outboxDir, ack);
+    }
 
-        if (payload["players"] is not JsonArray players)
-            throw new JsonException("Relay state players must be an array.");
+    void HandleMutationBatchDownload(MutationInboxBatch batch)
+    {
+        MutationInboxPublisher.PublishAtomic(_inboxDir, batch);
+    }
 
-        foreach (var node in players)
+    async Task HandleRelayStateUpdate(RelayStateUpdate update, RelayPacket packet, CancellationToken ct)
+    {
+        try
         {
-            if (node is not JsonObject player)
-                throw new JsonException("Relay state players must contain objects.");
-            yield return player;
+            //TODO: Save these states to sqlite once durable events in place.
+            foreach (var player in update.States)
+                foreach (var ev in player.Events)
+                    MutationValidator.EnsureValid(ev);
         }
+        catch (JsonException ex)
+        {
+            RelayLogger.Error($"[CLIENT] Rejected invalid mutation state from host: {ex.Message}");
+            return;
+        }
+
+        await File.WriteAllTextAsync(_remotePath, Encoding.UTF8.GetString(packet.Data), ct);
     }
 }

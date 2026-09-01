@@ -39,6 +39,9 @@ public enum JsonIdentifier : byte
     snap_done,
     snap_begin,
     snap_end,
+    mutation_batch_upload,
+    mutation_batch_upload_ack,
+    mutation_batch_download,
 }
 
 public readonly record struct SnapshotChunk(SnapshotFileId FileId, int Sequence, byte[] Data);
@@ -146,7 +149,7 @@ public sealed record RelayStateUpdate : IRelayPacket
 }
 
 // Client -> Host: raw outbox entries this client hasn't had acknowledged yet.
-public sealed record MutationBatchUpload(JsonElement[] Entries) : IRelayPacket;
+public sealed record MutationBatchUpload(MutationEnvelope[] Entries) : IRelayPacket;
 
 // Host -> Client: an ack for the client's own outbox (mirrors MutationOutboxAck).
 public sealed record MutationBatchUploadAck(MutationOutboxAck Ack) : IRelayPacket;
@@ -168,6 +171,9 @@ public static class RelayMessageParser
                 case JsonIdentifier.snap_end: return JsonSerializer.Deserialize<SnapshotEnd>(packet.Data);
                 case JsonIdentifier.player_id: return JsonSerializer.Deserialize<PlayerState>(packet.Data);
                 case JsonIdentifier.players: return JsonSerializer.Deserialize<RelayStateUpdate>(packet.Data);
+                case JsonIdentifier.mutation_batch_upload: return JsonSerializer.Deserialize<MutationBatchUpload>(packet.Data);
+                case JsonIdentifier.mutation_batch_upload_ack: return JsonSerializer.Deserialize<MutationBatchUploadAck>(packet.Data);
+                case JsonIdentifier.mutation_batch_download: return JsonSerializer.Deserialize<MutationBatchDownload>(packet.Data);
                 default: return null;
             }
         }
