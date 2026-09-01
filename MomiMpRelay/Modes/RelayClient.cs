@@ -17,6 +17,7 @@ namespace MomiMpRelay.Modes;
 public sealed class RelayClient
 {
     const int PollMs = 50, ReconnectDelayMs = 3000;
+    static readonly IReadOnlyDictionary<string, long> EmptyClientLag = new Dictionary<string, long>();
     readonly string _host, _mpDir, _outPath, _outboxDir, _inboxDir, _remotePath; readonly int _port; readonly StatusReporter _reporter;
     public RelayClient(string host, int port, string mpDir, string outPath, string outboxDir, string inboxDir, string remotePath, StatusReporter reporter)
     {
@@ -138,6 +139,10 @@ public sealed class RelayClient
                         try { File.Delete(repairRequestPath); } catch { }
                     }
                 }
+
+                var outboxPending = Directory.Exists(_outboxDir) ? Directory.GetFiles(_outboxDir, "segment-*.json").Length : 0;
+                var inboxPending = File.Exists(Path.Combine(_inboxDir, MutationInboxPublisher.PendingBatchFileName)) ? 1 : 0;
+                _reporter.SetMutationDiagnostics(ledgerHeadRelaySeq: 0, clientLag: EmptyClientLag, outboxPending, inboxPending);
 
                 await Task.Delay(PollMs, ct);
             }

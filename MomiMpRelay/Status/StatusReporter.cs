@@ -10,6 +10,10 @@ public sealed class StatusReporter
     string _role = "off";
     int _peers;
     string? _detail;
+    long _ledgerHeadRelaySeq;
+    IReadOnlyDictionary<string, long> _clientLag = new Dictionary<string, long>();
+    int _outboxPending;
+    int _inboxPending;
 
     public StatusReporter(string mpDir) => _path = Path.Combine(mpDir, "mp_status.json");
 
@@ -19,6 +23,15 @@ public sealed class StatusReporter
         _role = role;
         _peers = peers;
         _detail = detail;
+    }
+
+    /// <summary>Surfaces mutation-pipeline health so problems are visible without reading the SQLite ledger directly.</summary>
+    public void SetMutationDiagnostics(long ledgerHeadRelaySeq, IReadOnlyDictionary<string, long> clientLag, int outboxPending, int inboxPending)
+    {
+        _ledgerHeadRelaySeq = ledgerHeadRelaySeq;
+        _clientLag = clientLag;
+        _outboxPending = outboxPending;
+        _inboxPending = inboxPending;
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -36,6 +49,10 @@ public sealed class StatusReporter
 
     public async Task WriteOnceAsync(CancellationToken ct)
     {
+        var clientLag = new JsonObject();
+        foreach (var (playerId, lag) in _clientLag)
+            clientLag[playerId] = lag;
+
         var obj = new JsonObject
         {
             ["hb"] = Interlocked.Increment(ref _hb),
@@ -43,6 +60,10 @@ public sealed class StatusReporter
             ["role"] = _role,
             ["peers"] = _peers,
             ["detail"] = _detail,
+            ["ledgerHeadRelaySeq"] = _ledgerHeadRelaySeq,
+            ["clientLag"] = clientLag,
+            ["outboxPending"] = _outboxPending,
+            ["inboxPending"] = _inboxPending,
         };
         try
         {

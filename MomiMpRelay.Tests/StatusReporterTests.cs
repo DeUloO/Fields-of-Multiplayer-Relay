@@ -27,6 +27,22 @@ public sealed class StatusReporterTests : IDisposable
     }
 
     [Fact]
+    public async Task WriteOncePublishesMutationDiagnostics()
+    {
+        var reporter = new StatusReporter(_directory);
+        reporter.SetMutationDiagnostics(42, new Dictionary<string, long> { ["Farmer|Farm"] = 3 }, outboxPending: 2, inboxPending: 1);
+
+        await reporter.WriteOnceAsync(CancellationToken.None);
+
+        var path = Path.Combine(_directory, "mp_status.json");
+        var status = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
+        Assert.Equal(42, status["ledgerHeadRelaySeq"]!.GetValue<long>());
+        Assert.Equal(3, status["clientLag"]!["Farmer|Farm"]!.GetValue<long>());
+        Assert.Equal(2, status["outboxPending"]!.GetValue<int>());
+        Assert.Equal(1, status["inboxPending"]!.GetValue<int>());
+    }
+
+    [Fact]
     public async Task TryDeleteRemovesStatusFile()
     {
         var reporter = new StatusReporter(_directory);

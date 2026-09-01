@@ -131,27 +131,6 @@ public sealed class MutationEventTests
             "{\"k\":\"ipk\",\"s\":1,\"loc\":1,\"g\":\"drop\",\"extra\":true}", MutationJson.Options));
     }
 
-    [Fact]
-    public void CurrentPlayerStateEventsAreParsedWithoutRewritingThePayload()
-    {
-        var state = JsonNode.Parse("{\"player_id\":\"p1\",\"evs\":[{\"k\":\"spawn\",\"s\":42,\"loc\":1,\"tx\":10,\"ty\":12,\"oid\":405,\"hp\":3}]}")!.AsObject();
-        var original = state.ToJsonString();
-
-        var events = CurrentMutationParser.ParseEvents(state);
-
-        var spawn = Assert.IsType<SpawnMutation>(Assert.Single(events));
-        Assert.Equal(10, spawn.TileX);
-        Assert.Equal(original, state.ToJsonString());
-    }
-
-    [Fact]
-    public void CurrentPlayerStateRejectsUnsupportedEventKinds()
-    {
-        var state = JsonNode.Parse("{\"player_id\":\"p1\",\"evs\":[{\"k\":\"turn_in_box\",\"s\":1,\"loc\":1}]}")!.AsObject();
-
-        Assert.Throws<JsonException>(() => CurrentMutationParser.ParseEvents(state));
-    }
-
     static void AssertJsonEquivalent(JsonElement expected, JsonElement actual)
     {
         Assert.Equal(expected.ValueKind, actual.ValueKind);

@@ -208,6 +208,15 @@ public sealed class RelayHost
                         }
 
                     }
+
+                    var head = ledger.GetHeadRelaySeq(hostPid);
+                    var clientLag = new Dictionary<string, long> { [hostPid] = head - ledger.GetClientCursor(hostPid, hostPid) };
+                    foreach (var session in sessions.Keys)
+                        if (session.PlayerId is { } pid)
+                            clientLag[pid] = head - ledger.GetClientCursor(hostPid, pid);
+                    var outboxPending = Directory.Exists(outboxDir) ? Directory.GetFiles(outboxDir, "segment-*.json").Length : 0;
+                    var inboxPending = File.Exists(Path.Combine(inboxDir, MutationInboxPublisher.PendingBatchFileName)) ? 1 : 0;
+                    _reporter.SetMutationDiagnostics(head, clientLag, outboxPending, inboxPending);
                 }
 
                 await Task.Delay(PollMs, ct);
