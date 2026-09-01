@@ -180,10 +180,27 @@ public sealed class MutationLedger : IDisposable
         }
     }
 
+    public void PruneSessionProducerEvents(string sessionId)
+    {
+        lock (_sync)
+        {
+            long lowestCursor = GetLowestClientCursor(sessionId);
+
+            _connection.Execute(
+                "DELETE FROM producer_events WHERE session_id = @sessionId AND relay_seq <= @lowestCursor",
+                new { sessionId, lowestCursor });
+        }
+    }
+
     long GetClientCursorCore(string sessionId, string playerId) =>
         _connection.QuerySingleOrDefault<long?>(
             "SELECT last_applied_relay_seq FROM client_progress WHERE session_id = @sessionId AND player_id = @playerId",
             new { sessionId, playerId }) ?? 0;
+
+    long GetLowestClientCursor(string sessionId) =>
+        _connection.QuerySingleOrDefault<long?>(
+            "SELECT MIN(last_applied_relay_seq) FROM client_progress WHERE session_id = @sessionId",
+            new { sessionId }) ?? 0;
 
     /// <summary>Advances a client's durable applied cursor; never moves it backward.</summary>
     public void RecordClientCursor(string sessionId, string playerId, long relaySeq)

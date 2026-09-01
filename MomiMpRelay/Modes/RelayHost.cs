@@ -99,6 +99,27 @@ public sealed class RelayHost
                 }
             }
         }, pollCts.Token);
+        using var pruneLedgerCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        const int PruneLedgerIntervalMs = 10000;
+        var pruneLedgerTask = Task.Run(async () =>
+        {
+            while (!pruneLedgerCts.IsCancellationRequested)
+            {
+                try
+                {
+                    if (string.IsNullOrWhiteSpace(hostPid))
+                    {
+                        await Task.Delay(PruneLedgerIntervalMs, pruneLedgerCts.Token);
+                        continue;
+                    }
+                    ledger.PruneSessionProducerEvents(hostPid);
+                    await Task.Delay(PruneLedgerIntervalMs, pruneLedgerCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+        }, pruneLedgerCts.Token);
         _reporter.Set("listening", "host", 0);
         RelayLogger.Info($"[HOST] Listening on :{_port}");
         try
@@ -132,7 +153,7 @@ public sealed class RelayHost
                         PushToAll();
                     }
                 }
-                
+
                 MutationOutboxIngestor.Ingest(outboxDir, ledger);
                 if (hostPid is not null)
                 {
@@ -142,7 +163,8 @@ public sealed class RelayHost
 
                     foreach (var session in sessions.Keys)
                     {
-                        if(string.IsNullOrWhiteSpace(session.PlayerId)) continue;
+                        if (string.IsNullOrWhiteSpace(session.PlayerId))
+                            continue;
                         batch = MutationInboxMaterializer.BuildBatch(ledger, hostPid, session.PlayerId, maxEvents: 500);
                         if (batch is not null)
                             session.Push(new RelayPacketKind.Json(JsonIdentifier.mutation_batch_download), new MutationBatchDownload(batch));
