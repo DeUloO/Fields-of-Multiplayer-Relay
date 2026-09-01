@@ -132,15 +132,21 @@ public sealed class RelayHost
                         PushToAll();
                     }
                 }
-
-                // Self round trip only: the host's own player, via its own local files and ledger.
-                // Remote joiners are not yet fed into this ledger (deferred to the network-forwarding step).
+                
                 MutationOutboxIngestor.Ingest(outboxDir, ledger);
                 if (hostPid is not null)
                 {
                     var batch = MutationInboxMaterializer.BuildBatch(ledger, hostPid, hostPid, maxEvents: 500);
                     if (batch is not null)
                         MutationInboxPublisher.PublishAtomic(inboxDir, batch);
+
+                    foreach (var session in sessions.Keys)
+                    {
+                        if(string.IsNullOrWhiteSpace(session.PlayerId)) continue;
+                        batch = MutationInboxMaterializer.BuildBatch(ledger, hostPid, session.PlayerId, maxEvents: 500);
+                        if (batch is not null)
+                            session.Push(new RelayPacketKind.Json(JsonIdentifier.mutation_batch_download), new MutationBatchDownload(batch));
+                    }
                 }
 
                 await Task.Delay(PollMs, ct);
@@ -175,28 +181,20 @@ public sealed class RelayHost
                     if (packet.Kind.Type != RelayPacketKindType.Json)
                         continue;
                     var message = RelayMessageParser.Parse(packet);
-                    if (message is SnapshotRequest)
+
+                    switch (message)
                     {
-                        await SendSnapshot(session, token);
-                        continue;
+                        case SnapshotRequest:
+                            await SendSnapshot(session, token);
+                            continue;
+                        case PlayerState state:
+                            await HandlePlayerState(state, states, session, hostPid, _remotePath, writeLock, PushToAll, token);
+                            continue;
+                        case MutationBatchUpload batch:
+                            await HandleMutationBatchUpload(batch, ledger, session, token);
+                            continue;
                     }
-                    if (message is not PlayerState state)
-                        continue;
-                    try
-                    {
-                        foreach (var ev in state.Events)
-                            MutationValidator.EnsureValid(ev);
-                    }
-                    catch (JsonException ex)
-                    {
-                        RelayLogger.Error($"[HOST] Rejected invalid mutation state from {session.Peer.Address}: {ex.Message}");
-                        continue;
-                    }
-                    session.PlayerId = state.PlayerId;
-                    states[state.PlayerId] = state;
-                    if (hostPid is not null)
-                        await RelayFileStore.WriteRemoteAsync(_remotePath, JsonSerializer.Serialize(new RelayStateUpdate(states, hostPid)), writeLock, token);
-                    PushToAll();
+
                 }
             }
             catch (OperationCanceledException) { }
@@ -261,6 +259,55 @@ public sealed class RelayHost
                 }
             }
             catch (OperationCanceledException) { }
+        }
+
+        static async Task HandlePlayerState(PlayerState state, ConcurrentDictionary<string, PlayerState> states, ClientSession session, string? hostPid, string _remotePath, SemaphoreSlim writeLock, Action PushToAll, CancellationToken token)
+        {
+            try
+            {
+                foreach (var ev in state.Events)
+                    MutationValidator.EnsureValid(ev);
+            }
+            catch (JsonException ex)
+            {
+                RelayLogger.Error($"[HOST] Rejected invalid mutation state from {session.Peer.Address}: {ex.Message}");
+                return;
+            }
+            session.PlayerId = state.PlayerId;
+            states[state.PlayerId] = state;
+            if (hostPid is not null)
+                await RelayFileStore.WriteRemoteAsync(_remotePath, JsonSerializer.Serialize(new RelayStateUpdate(states, hostPid)), writeLock, token);
+            PushToAll();
+        }
+
+        static async Task HandleMutationBatchUpload(MutationBatchUpload batch, MutationLedger ledger, ClientSession session, CancellationToken token)
+        {
+            try
+            {
+                int accepted = 0, duplicates = 0;
+                MutationEnvelope? last = null;
+                long maxClientSeq = 0;
+                foreach (var envelope in batch.Entries)
+                {
+                    var result = ledger.Accept(envelope);
+                    if (result.IsDuplicate)
+                        duplicates++;
+                    else
+                        accepted++;
+
+                    last = envelope;
+                    if (envelope.ClientSeq > maxClientSeq)
+                        maxClientSeq = envelope.ClientSeq;
+                }
+                if (last == null)
+                    return;
+                var ack = new MutationBatchUploadAck(new MutationOutboxAck(last.Protocol, last.PlayerId, last.ClientEpoch, maxClientSeq, ledger.GetHeadRelaySeq(last.SessionId)));
+                await RelayTransport.SendLockedAsync(session, JsonIdentifier.mutation_batch_upload_ack, ack, token);
+            }
+            catch (Exception ex)
+            {
+                RelayLogger.Error($"[HOST] Failed to handle mutation batch upload: {ex.Message}");
+            }
         }
     }
 }
