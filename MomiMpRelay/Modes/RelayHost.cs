@@ -37,7 +37,7 @@ public sealed class RelayHost
     public async Task<int> RunAsync(CancellationToken ct)
     {
         var states = new ConcurrentDictionary<string, PlayerState>();
-        var sessions = new ConcurrentDictionary<ClientSession, byte>();
+        var sessions = new ConcurrentDictionary<NetPeer, ClientSession>();
         using var writeLock = new SemaphoreSlim(1, 1);
         using var snapshotLock = new SemaphoreSlim(1, 1);
         using var ledger = new MutationLedger(_mpDir);
@@ -46,9 +46,11 @@ public sealed class RelayHost
         string? hostPid = null;
         void PushToAll()
         {
-            foreach (var (session, _) in sessions)
-                if (session.PlayerId is { } pid)
-                    if (!session.Push(new RelayPacketKind.Json(JsonIdentifier.player_id), new RelayStateUpdate(states, pid)))
+            // GML already ignores updates about its own player, so one shared update serves every recipient.
+            var update = new RelayStateUpdate(states, exclude: null);
+            foreach (var session in sessions.Values)
+                if (session.PlayerId is not null)
+                    if (!session.Push(new RelayPacketKind.Json(JsonIdentifier.player_id), update))
                         RelayLogger.Error($"[HOST] Outbox full for {session.Peer.Address}; state update dropped.");
         }
         void Refresh() => _reporter.Set("listening", "host", sessions.Count);
@@ -56,7 +58,7 @@ public sealed class RelayHost
             (peer, address) =>
             {
                 var session = new ClientSession(peer);
-                sessions.TryAdd(session, 0);
+                sessions.TryAdd(peer, session);
                 Refresh();
                 RelayLogger.Info($"[HOST] + {address}");
                 _ = Task.Run(() => WriteLoop(session, ct), ct);
@@ -64,8 +66,7 @@ public sealed class RelayHost
             },
             (peer, packet) =>
             {
-                var session = sessions.Keys.FirstOrDefault(s => s.Peer == peer);
-                if (session is not null && !session.Inbox.Writer.TryWrite(packet))
+                if (sessions.TryGetValue(peer, out var session) && !session.Inbox.Writer.TryWrite(packet))
                 {
                     RelayLogger.Error($"[HOST] Inbox full for {peer.Address}; disconnecting slow peer.");
                     peer.Disconnect();
@@ -73,13 +74,11 @@ public sealed class RelayHost
             },
             (peer, disconnect) =>
             {
-                var session = sessions.Keys.FirstOrDefault(s => s.Peer == peer);
-                if (session is null)
+                if (!sessions.TryRemove(peer, out var session))
                     return;
                 session.Inbox.Writer.TryComplete();
                 if (session.PlayerId is { } pid)
                     states.TryRemove(pid, out _);
-                sessions.TryRemove(session, out _);
                 session.Dispose();
                 Refresh();
                 RelayLogger.Info($"[HOST] Disconnected {peer.Address}: {disconnect.Reason}");
@@ -125,30 +124,17 @@ public sealed class RelayHost
         RelayLogger.Info($"[HOST] Listening on :{_port}");
         try
         {
-            byte[]? lastHash = null;
+            string? lastRaw = null;
             long hostLastRelaySeq = 0L;
             while (!ct.IsCancellationRequested)
             {
-                var hash = await RelayFileStore.GetSha256Async(_outPath, ct);
-                if (!hash.SequenceEqual(lastHash))
+                var raw = await RelayFileStore.ReadTextSharedAsync(_outPath, ct);
+                if (raw is not null && raw != lastRaw)
                 {
-                    var raw = await RelayFileStore.ReadTextSharedAsync(_outPath, ct);
-                    lastHash = hash;
-                    var state = JsonSerializer.Deserialize<PlayerState>(raw ?? string.Empty);
+                    lastRaw = raw;
+                    var state = JsonSerializer.Deserialize<PlayerState>(raw);
                     if (state is not null)
                     {
-                        try
-                        {
-                            foreach (var ev in state.Events)
-                            {
-                                MutationValidator.EnsureValid(ev);
-                            }
-                        }
-                        catch (JsonException ex)
-                        {
-                            RelayLogger.Error($"[HOST] Rejected invalid local mutation state: {ex.Message}");
-                            continue;
-                        }
                         hostPid = state.PlayerId;
                         states[state.PlayerId] = state;
                         await RelayFileStore.WriteRemoteAsync(_remotePath, JsonSerializer.Serialize(new RelayStateUpdate(states, hostPid)), writeLock, ct);
@@ -164,8 +150,8 @@ public sealed class RelayHost
                     {
                         try
                         {
-                            var raw = await File.ReadAllTextAsync(repairRequestPath, ct);
-                            var request = JsonSerializer.Deserialize<RepairRequest>(raw);
+                            var repairRaw = await File.ReadAllTextAsync(repairRequestPath, ct);
+                            var request = JsonSerializer.Deserialize<RepairRequest>(repairRaw);
                             if (request is not null)
                             {
                                 ledger.RecordClientCursor(hostPid, request.PlayerId, request.ReportedCursor);
@@ -194,7 +180,7 @@ public sealed class RelayHost
                         }
                     }
 
-                    foreach (var session in sessions.Keys)
+                    foreach (var session in sessions.Values)
                     {
                         if (string.IsNullOrWhiteSpace(session.PlayerId))
                             continue;
@@ -211,7 +197,7 @@ public sealed class RelayHost
 
                     var head = ledger.GetHeadRelaySeq(hostPid);
                     var clientLag = new Dictionary<string, long> { [hostPid] = head - ledger.GetClientCursor(hostPid, hostPid) };
-                    foreach (var session in sessions.Keys)
+                    foreach (var session in sessions.Values)
                         if (session.PlayerId is { } pid)
                             clientLag[pid] = head - ledger.GetClientCursor(hostPid, pid);
                     var outboxPending = Directory.Exists(outboxDir) ? Directory.GetFiles(outboxDir, "segment-*.json").Length : 0;
@@ -235,7 +221,7 @@ public sealed class RelayHost
             }
 
             net.Stop();
-            foreach (var (session, _) in sessions)
+            foreach (var session in sessions.Values)
             {
                 session.Dispose();
             }
@@ -336,16 +322,6 @@ public sealed class RelayHost
 
         static async Task HandlePlayerState(PlayerState state, ConcurrentDictionary<string, PlayerState> states, ClientSession session, string? hostPid, string _remotePath, SemaphoreSlim writeLock, Action PushToAll, CancellationToken token)
         {
-            try
-            {
-                foreach (var ev in state.Events)
-                    MutationValidator.EnsureValid(ev);
-            }
-            catch (JsonException ex)
-            {
-                RelayLogger.Error($"[HOST] Rejected invalid mutation state from {session.Peer.Address}: {ex.Message}");
-                return;
-            }
             session.PlayerId = state.PlayerId;
             states[state.PlayerId] = state;
             if (hostPid is not null)
@@ -354,26 +330,13 @@ public sealed class RelayHost
         }
 
         static async Task HandleMutationBatchUpload(MutationBatchUpload batch, MutationLedger ledger, ClientSession session, CancellationToken token)
-        {            try
+        {
+            try
             {
-                int accepted = 0, duplicates = 0;
-                MutationEnvelope? last = null;
-                long maxClientSeq = 0;
-                foreach (var envelope in batch.Entries)
-                {
-                    var result = ledger.Accept(envelope);
-                    if (result.IsDuplicate)
-                        duplicates++;
-                    else
-                        accepted++;
-
-                    last = envelope;
-                    if (envelope.ClientSeq > maxClientSeq)
-                        maxClientSeq = envelope.ClientSeq;
-                }
-                if (last == null)
+                var summary = MutationOutboxIngestor.AcceptAll(ledger, batch.Entries);
+                if (summary.Last is not { } last)
                     return;
-                var ack = new MutationBatchUploadAck(new MutationOutboxAck(last.Protocol, last.PlayerId, last.ClientEpoch, maxClientSeq, ledger.GetHeadRelaySeq(last.SessionId)));
+                var ack = new MutationBatchUploadAck(new MutationOutboxAck(last.Protocol, last.PlayerId, last.ClientEpoch, summary.MaxClientSeq, ledger.GetHeadRelaySeq(last.SessionId)));
                 await RelayTransport.SendLockedAsync(session, JsonIdentifier.mutation_batch_upload_ack, ack, token);
             }
             catch (Exception ex)

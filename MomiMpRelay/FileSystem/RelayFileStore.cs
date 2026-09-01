@@ -5,14 +5,6 @@ namespace MomiMpRelay.FileSystem;
 
 public static class RelayFileStore
 {
-    public static async Task<byte[]> GetSha256Async(string path, CancellationToken ct)
-    {
-        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete);
-        using var sha256 = System.Security.Cryptography.SHA256.Create();
-        var hash = await sha256.ComputeHashAsync(fs, ct);
-        return hash;
-    }
     public static async Task<string?> ReadTextSharedAsync(string path, CancellationToken ct)
     {
         for (int attempt = 0; attempt < 6; attempt++)

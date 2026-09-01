@@ -172,8 +172,8 @@ public sealed class RelayClient
                     case IMpControlMessage control:
                         await snap.HandleAsync(control, ct);
                         break;
-                    case RelayStateUpdate update:
-                        await HandleRelayStateUpdate(update, packet, ct);
+                    case RelayStateUpdate:
+                        await HandleRelayStateUpdate(packet, ct);
                         break;
                     case MutationBatchUploadAck ack:
                         HandleMutationBatchUploadAck(ack.Ack);
@@ -197,21 +197,8 @@ public sealed class RelayClient
         MutationInboxPublisher.PublishAtomic(_inboxDir, batch);
     }
 
-    async Task HandleRelayStateUpdate(RelayStateUpdate update, RelayPacket packet, CancellationToken ct)
+    async Task HandleRelayStateUpdate(RelayPacket packet, CancellationToken ct)
     {
-        try
-        {
-            //TODO: Save these states to sqlite once durable events in place.
-            foreach (var player in update.States)
-                foreach (var ev in player.Events)
-                    MutationValidator.EnsureValid(ev);
-        }
-        catch (JsonException ex)
-        {
-            RelayLogger.Error($"[CLIENT] Rejected invalid mutation state from host: {ex.Message}");
-            return;
-        }
-
         await File.WriteAllTextAsync(_remotePath, Encoding.UTF8.GetString(packet.Data), ct);
     }
 }

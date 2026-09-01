@@ -16,7 +16,7 @@ public sealed class RelayPacketCodecTests
         Assert.True(RelayPacketCodec.TryDecode(encoded, out var packet));
         var kind = Assert.IsType<RelayPacketKind.Json>(packet.Kind);
         Assert.Equal(JsonIdentifier.player_id, kind.Identifier);
-        Assert.Equal("{\"player_id\":\"p1\",\"evs\":[]}", Encoding.UTF8.GetString(packet.Data));
+        Assert.Equal("{\"player_id\":\"p1\"}", Encoding.UTF8.GetString(packet.Data));
     }
 
     [Fact]

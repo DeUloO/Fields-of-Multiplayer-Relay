@@ -75,6 +75,7 @@ public sealed class MutationLedger : IDisposable
         _connection = new SqliteConnection($"Data Source={databasePath}");
         _connection.Open();
         _connection.Execute("PRAGMA journal_mode=WAL;");
+        _connection.Execute("PRAGMA synchronous=NORMAL;"); // safe with WAL; avoids an fsync per commit
         _connection.Execute(Schema);
     }
 
@@ -82,61 +83,87 @@ public sealed class MutationLedger : IDisposable
     public MutationAcceptResult Accept(MutationEnvelope envelope)
     {
         ArgumentNullException.ThrowIfNull(envelope);
-        MutationValidator.EnsureValid(envelope);
-
         lock (_sync)
         {
             using var transaction = _connection.BeginTransaction();
-
-            EnsureSession(envelope, transaction);
-
-            var existingRelaySeq = _connection.QuerySingleOrDefault<long?>(
-                """
-                SELECT relay_seq FROM producer_events
-                WHERE session_id = @SessionId AND event_id = @EventId
-                """,
-                new { envelope.SessionId, envelope.EventId }, transaction);
-
-            if (existingRelaySeq is { } duplicateRelaySeq)
-            {
-                transaction.Commit();
-                return new MutationAcceptResult(duplicateRelaySeq, IsDuplicate: true);
-            }
-
-            var head = _connection.QuerySingle<long>(
-                "SELECT head_relay_seq FROM sessions WHERE session_id = @SessionId",
-                new { envelope.SessionId }, transaction);
-            var relaySeq = head + 1;
-
-            _connection.Execute(
-                """
-                INSERT INTO producer_events
-                    (session_id, relay_seq, event_id, player_id, client_epoch, client_seq, kind, location_id, payload_json, accepted_at_utc)
-                VALUES
-                    (@SessionId, @RelaySeq, @EventId, @PlayerId, @ClientEpoch, @ClientSeq, @Kind, @LocationId, @PayloadJson, @AcceptedAtUtc)
-                """,
-                new
-                {
-                    envelope.SessionId,
-                    RelaySeq = relaySeq,
-                    envelope.EventId,
-                    envelope.PlayerId,
-                    envelope.ClientEpoch,
-                    envelope.ClientSeq,
-                    Kind = MutationEventKind.GetKind(envelope.Event),
-                    LocationId = envelope.Event.LocationId,
-                    PayloadJson = JsonSerializer.Serialize(envelope.Event, MutationJson.Options),
-                    AcceptedAtUtc = DateTime.UtcNow.ToString("o"),
-                }, transaction);
-
-            _connection.Execute(
-                "UPDATE sessions SET head_relay_seq = @RelaySeq WHERE session_id = @SessionId",
-                new { envelope.SessionId, RelaySeq = relaySeq }, transaction);
-
+            var result = AcceptCore(envelope, transaction);
             transaction.Commit();
-            _lastPublishedRelaySeqs[envelope.SessionId] = relaySeq;
-            return new MutationAcceptResult(relaySeq, IsDuplicate: false);
+            return result;
         }
+    }
+
+    /// <summary>Accepts many envelopes in one transaction; a malformed entry is skipped without losing the rest of the batch.</summary>
+    public IReadOnlyList<MutationAcceptResult?> AcceptMany(IReadOnlyList<MutationEnvelope> envelopes)
+    {
+        ArgumentNullException.ThrowIfNull(envelopes);
+        var results = new MutationAcceptResult?[envelopes.Count];
+        lock (_sync)
+        {
+            using var transaction = _connection.BeginTransaction();
+            for (var i = 0; i < envelopes.Count; i++)
+            {
+                try
+                {
+                    results[i] = AcceptCore(envelopes[i], transaction);
+                }
+                catch (Exception)
+                {
+                    results[i] = null; // malformed/invalid; skip without aborting the rest of the batch
+                }
+            }
+            transaction.Commit();
+        }
+        return results;
+    }
+
+    MutationAcceptResult AcceptCore(MutationEnvelope envelope, SqliteTransaction transaction)
+    {
+        MutationValidator.EnsureValid(envelope);
+
+        EnsureSession(envelope, transaction);
+
+        var existingRelaySeq = _connection.QuerySingleOrDefault<long?>(
+            """
+            SELECT relay_seq FROM producer_events
+            WHERE session_id = @SessionId AND event_id = @EventId
+            """,
+            new { envelope.SessionId, envelope.EventId }, transaction);
+
+        if (existingRelaySeq is { } duplicateRelaySeq)
+            return new MutationAcceptResult(duplicateRelaySeq, IsDuplicate: true);
+
+        var head = _connection.QuerySingle<long>(
+            "SELECT head_relay_seq FROM sessions WHERE session_id = @SessionId",
+            new { envelope.SessionId }, transaction);
+        var relaySeq = head + 1;
+
+        _connection.Execute(
+            """
+            INSERT INTO producer_events
+                (session_id, relay_seq, event_id, player_id, client_epoch, client_seq, kind, location_id, payload_json, accepted_at_utc)
+            VALUES
+                (@SessionId, @RelaySeq, @EventId, @PlayerId, @ClientEpoch, @ClientSeq, @Kind, @LocationId, @PayloadJson, @AcceptedAtUtc)
+            """,
+            new
+            {
+                envelope.SessionId,
+                RelaySeq = relaySeq,
+                envelope.EventId,
+                envelope.PlayerId,
+                envelope.ClientEpoch,
+                envelope.ClientSeq,
+                Kind = MutationEventKind.GetKind(envelope.Event),
+                LocationId = envelope.Event.LocationId,
+                PayloadJson = JsonSerializer.Serialize(envelope.Event, MutationJson.Options),
+                AcceptedAtUtc = DateTime.UtcNow.ToString("o"),
+            }, transaction);
+
+        _connection.Execute(
+            "UPDATE sessions SET head_relay_seq = @RelaySeq WHERE session_id = @SessionId",
+            new { envelope.SessionId, RelaySeq = relaySeq }, transaction);
+
+        _lastPublishedRelaySeqs[envelope.SessionId] = relaySeq;
+        return new MutationAcceptResult(relaySeq, IsDuplicate: false);
     }
 
     public long GetHeadRelaySeq(string sessionId)

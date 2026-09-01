@@ -133,9 +133,6 @@ public sealed record PlayerState() : IRelayPacket
 {
     [JsonPropertyName("player_id")] 
     public required string PlayerId { get; init; }
-
-    [JsonPropertyName("evs")] 
-    public List<MutationEvent> Events { get; init; } = [];
 }
 
 public sealed record RelayStateUpdate : IRelayPacket

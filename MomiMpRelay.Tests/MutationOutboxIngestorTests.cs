@@ -81,6 +81,26 @@ public sealed class MutationOutboxIngestorTests : IDisposable
         Assert.Null(result.Ack);
     }
 
+    [Fact]
+    public void GetUnacknowledgedComparesAcceptedThroughClientSeqNotRelayHeadSeq()
+    {
+        // Ingest and ack this player's clientSeq 1, then inflate the session's global relaySeq
+        // far past clientSeq 2 via a second producer, to prove unacked filtering doesn't use RelayHeadSeq.
+        WriteSegment("segment-000001.json", EnvelopeLine(clientSeq: 1, eventId: "p1:e1:1"));
+        MutationOutboxIngestor.Ingest(_outboxDir, _ledger);
+        for (var i = 0; i < 5; i++)
+            _ledger.Accept(new MutationEnvelope(2, "session-1", "Other|Farm", "epoch-2", i + 1, $"other:e2:{i + 1}",
+                new ItemPickupMutation(Sequence: i + 1, LocationId: 1, ItemGid: "9:9:9:9")));
+        Assert.True(_ledger.GetHeadRelaySeq("session-1") > 2);
+
+        WriteSegment("segment-000002.json", EnvelopeLine(clientSeq: 2, eventId: "p1:e1:2"));
+
+        var unacknowledged = MutationOutboxIngestor.GetUnacknowledged(_outboxDir);
+
+        Assert.Single(unacknowledged);
+        Assert.Equal(2, unacknowledged[0].ClientSeq);
+    }
+
     void WriteSegment(string name, params string[] rawJsonEntries) =>
         File.WriteAllText(Path.Combine(_outboxDir, name), $"[{string.Join(",", rawJsonEntries)}]");
 

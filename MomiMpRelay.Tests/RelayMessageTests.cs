@@ -63,13 +63,12 @@ public sealed class RelayMessageTests
     }
 
     [Fact]
-    public void PlayerStateDeserializesPlayerIdAndEvents()
+    public void PlayerStateDeserializesPlayerId()
     {
         var state = JsonSerializer.Deserialize<PlayerState>("{\"player_id\":\"p1\"}");
 
         Assert.NotNull(state);
         Assert.Equal("p1", state.PlayerId);
-        Assert.Empty(state.Events);
     }
 
     static RelayPacket MakeJsonPacket(JsonIdentifier identifier, string json) =>
