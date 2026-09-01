@@ -125,6 +125,7 @@ public sealed class RelayHost
         try
         {
             byte[]? lastHash = null;
+            long hostLastRelaySeq = 0L;
             while (!ct.IsCancellationRequested)
             {
                 var hash = await RelayFileStore.GetSha256Async(_outPath, ct);
@@ -157,17 +158,29 @@ public sealed class RelayHost
                 MutationOutboxIngestor.Ingest(outboxDir, ledger);
                 if (hostPid is not null)
                 {
-                    var batch = MutationInboxMaterializer.BuildBatch(ledger, hostPid, hostPid, maxEvents: 500);
-                    if (batch is not null)
-                        MutationInboxPublisher.PublishAtomic(inboxDir, batch);
+                    if (ledger.GetHeadRelaySeq(hostPid) != hostLastRelaySeq)
+                    {
+                        var batch = MutationInboxMaterializer.BuildBatch(ledger, hostPid, hostPid, maxEvents: 500);
+                        if (batch is not null)
+                        {
+                            MutationInboxPublisher.PublishAtomic(inboxDir, batch);
+                            hostLastRelaySeq = ledger.GetHeadRelaySeq(hostPid);
+                        }
+                    }
 
                     foreach (var session in sessions.Keys)
                     {
                         if (string.IsNullOrWhiteSpace(session.PlayerId))
                             continue;
-                        batch = MutationInboxMaterializer.BuildBatch(ledger, hostPid, session.PlayerId, maxEvents: 500);
+                        if (ledger.GetHeadRelaySeq(hostPid) == session.LastPublishedRelaySeq)
+                            continue;
+                        var batch = MutationInboxMaterializer.BuildBatch(ledger, hostPid, session.PlayerId, maxEvents: 500);
                         if (batch is not null)
+                        {
+                            session.LastPublishedRelaySeq = ledger.GetHeadRelaySeq(hostPid);
                             session.Push(new RelayPacketKind.Json(JsonIdentifier.mutation_batch_download), new MutationBatchDownload(batch));
+                        }
+
                     }
                 }
 

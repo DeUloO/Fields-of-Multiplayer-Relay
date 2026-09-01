@@ -8,6 +8,7 @@ sealed class ClientSession : IDisposable
 {
     public readonly NetPeer Peer;
     public volatile string? PlayerId;
+    public long LastPublishedRelaySeq = 0L;
 
     public readonly Channel<(RelayPacketKind Kind, IRelayPacket Packet)> Outbox = Channel.CreateBounded<(RelayPacketKind Kind, IRelayPacket Packet)>(
         new BoundedChannelOptions(2) { FullMode = BoundedChannelFullMode.DropOldest });

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Dapper;
 using Microsoft.Data.Sqlite;
@@ -60,7 +61,7 @@ public sealed class MutationLedger : IDisposable
             requested_at_utc TEXT    NOT NULL
         );
         """;
-
+    private ConcurrentDictionary<string, long> _lastPublishedRelaySeqs = new ConcurrentDictionary<string, long>();
     readonly SqliteConnection _connection;
     readonly Lock _sync = new();
 
@@ -130,17 +131,22 @@ public sealed class MutationLedger : IDisposable
                 new { envelope.SessionId, RelaySeq = relaySeq }, transaction);
 
             transaction.Commit();
+            _lastPublishedRelaySeqs[envelope.SessionId] = relaySeq;
             return new MutationAcceptResult(relaySeq, IsDuplicate: false);
         }
     }
 
     public long GetHeadRelaySeq(string sessionId)
     {
+        if (_lastPublishedRelaySeqs.TryGetValue(sessionId, out var lastPublished))
+            return lastPublished;
         lock (_sync)
         {
-            return _connection.QuerySingleOrDefault<long?>(
+            lastPublished = _connection.QuerySingleOrDefault<long?>(
                 "SELECT head_relay_seq FROM sessions WHERE session_id = @sessionId",
                 new { sessionId }) ?? 0;
+            _lastPublishedRelaySeqs[sessionId] = lastPublished;
+            return lastPublished;
         }
     }
 
