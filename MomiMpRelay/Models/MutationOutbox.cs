@@ -35,10 +35,10 @@ public static class MutationOutboxIngestor
 
         foreach (var segment in segments)
         {
-            MutationEnvelope[] entries;
+            JsonElement[] rawEntries;
             try
             {
-                entries = JsonSerializer.Deserialize<MutationEnvelope[]>(File.ReadAllBytes(segment)) ?? [];
+                rawEntries = JsonSerializer.Deserialize<JsonElement[]>(File.ReadAllBytes(segment)) ?? [];
             }
             catch (IOException)
             {
@@ -50,10 +50,13 @@ public static class MutationOutboxIngestor
                 continue;
             }
 
-            foreach (var entry in entries)
+            foreach (var rawEntry in rawEntries)
             {
+                MutationEnvelope entry;
                 try
                 {
+                    entry = rawEntry.Deserialize<MutationEnvelope>()
+                        ?? throw new JsonException("Entry deserialized to null.");
                     MutationValidator.EnsureValid(entry);
                 }
                 catch (JsonException)

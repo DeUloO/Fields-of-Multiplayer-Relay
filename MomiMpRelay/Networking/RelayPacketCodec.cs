@@ -9,7 +9,8 @@ public static class RelayPacketCodec
 {
     public static byte[] EncodeJson(JsonIdentifier identifier, IRelayPacket message)
     {
-        var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(message);
+        // Serialize by runtime type; message's static type is the empty IRelayPacket marker interface.
+        var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(message, message.GetType());
         var packet = new byte[1 + 1 + jsonBytes.Length];
         packet[0] = (byte)RelayPacketKindType.Json;
         packet[1] = (byte)identifier;
@@ -60,7 +61,7 @@ public static class RelayPacketCodec
                 return true;
             case RelayPacketKindType.SnapshotChunk:
                 int sequence = BinaryPrimitives.ReadInt32LittleEndian(packet[2..]);
-                result = new RelayPacket(new RelayPacketKind.SnapshotChunk((SnapshotFileId)identifier, sequence), packet[(1 + sizeof(int))..].ToArray());
+                result = new RelayPacket(new RelayPacketKind.SnapshotChunk((SnapshotFileId)identifier, sequence), packet[(2 + sizeof(int))..].ToArray());
                 return true;
             default:
                 result = default;
@@ -70,18 +71,13 @@ public static class RelayPacketCodec
 
     public static bool TryDecodeSnapshotChunk(RelayPacket packet, out SnapshotChunk result)
     {
-        if (packet.Kind.Type != RelayPacketKindType.SnapshotChunk || packet.Data.Length < 1 + sizeof(int) ||
-            !IsKnownFileId(packet.Data[0]) ||
-            BinaryPrimitives.ReadInt32LittleEndian(packet.Data.AsSpan(1)) < 0 ||
-            packet.Data.Length == 1 + sizeof(int))
+        if (packet.Kind is not RelayPacketKind.SnapshotChunk chunkKind)
         {
             result = default;
             return false;
         }
 
-        result = new SnapshotChunk((SnapshotFileId)packet.Data[0],
-            BinaryPrimitives.ReadInt32LittleEndian(packet.Data.AsSpan(1)),
-            packet.Data[(1 + sizeof(int))..]);
+        result = new SnapshotChunk(chunkKind.FileId, chunkKind.Sequence, packet.Data);
         return true;
     }
 

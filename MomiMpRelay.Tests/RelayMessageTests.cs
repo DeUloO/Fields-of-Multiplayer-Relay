@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using MomiMpRelay.Models;
 
@@ -32,65 +33,45 @@ public sealed class RelayMessageTests
     }
 
     [Fact]
-    public void ControlParserCreatesTypedSnapshotBegin()
-    {
-        var message = RelayMessageParser.ParseControl(
-            "{\"mp_msg\":\"snap_begin\",\"name\":\"world_snapshot.json\",\"chunks\":4,\"bytes\":3600}");
-
-        var begin = Assert.IsType<SnapshotBegin>(message);
-        Assert.Equal("snap_begin", begin.MpMessage);
-        Assert.Equal("world_snapshot.json", begin.Name);
-        Assert.Equal(4, begin.Chunks);
-        Assert.Equal(3600, begin.Bytes);
-    }
-
-    [Fact]
-    public void SnapshotBeginSerializationIncludesDerivedMetadata()
-    {
-        var json = new SnapshotBegin("world_snapshot.json", 4, 3600).ToJson();
-
-        Assert.Equal("snap_begin", json["mp_msg"]!.GetValue<string>());
-        Assert.Equal("world_snapshot.json", json["name"]!.GetValue<string>());
-        Assert.Equal(4, json["chunks"]!.GetValue<int>());
-        Assert.Equal(3600, json["bytes"]!.GetValue<int>());
-    }
-
-    [Theory]
-    [InlineData("{\"mp_msg\":\"unknown\"}")]
-    [InlineData("not json")]
-    public void ControlParserRejectsUnknownOrMalformedMessages(string json)
-    {
-        Assert.Null(RelayMessageParser.ParseControl(json));
-    }
-
-    [Fact]
     public void MessageParserDispatchesEachSupportedMessageType()
     {
-        Assert.IsType<SnapshotRequest>(RelayMessageParser.Parse("{\"mp_msg\":\"snap_req\"}"));
-        Assert.IsType<PlayerState>(RelayMessageParser.Parse("{\"player_id\":\"p1\"}"));
-        Assert.IsType<RelayStateUpdate>(RelayMessageParser.Parse("{\"players\":[]}"));
-    }
-
-    [Theory]
-    [InlineData("{}")]
-    [InlineData("{\"mp_msg\":\"unknown\"}")]
-    [InlineData("not json")]
-    public void MessageParserRejectsUnknownMessages(string json)
-    {
-        Assert.Null(RelayMessageParser.Parse(json));
+        Assert.IsType<SnapshotRequest>(RelayMessageParser.Parse(MakeJsonPacket(JsonIdentifier.snap_req, "{}")));
+        Assert.IsType<SnapshotDone>(RelayMessageParser.Parse(MakeJsonPacket(JsonIdentifier.snap_done, "{}")));
+        Assert.IsType<SnapshotBegin>(RelayMessageParser.Parse(MakeJsonPacket(JsonIdentifier.snap_begin,
+            "{\"Name\":\"world_snapshot.json\",\"Chunks\":4,\"Bytes\":3600}")));
+        Assert.IsType<SnapshotEnd>(RelayMessageParser.Parse(MakeJsonPacket(JsonIdentifier.snap_end,
+            "{\"Name\":\"world_snapshot.json\"}")));
+        Assert.IsType<PlayerState>(RelayMessageParser.Parse(MakeJsonPacket(JsonIdentifier.player_id,
+            "{\"player_id\":\"p1\"}")));
+        Assert.IsType<RelayStateUpdate>(RelayMessageParser.Parse(MakeJsonPacket(JsonIdentifier.players, "{\"players\":[]}")));
     }
 
     [Fact]
-    public void PlayerStateRequiresNonBlankPlayerId()
+    public void MessageParserRejectsMalformedJson()
     {
-        var state = PlayerState.Parse("{\"player_id\":\"p1\",\"x\":12}");
-        var missing = PlayerState.Parse("{\"x\":12}");
-        var blank = PlayerState.Parse("{\"player_id\":\" \"}");
+        var malformed = new RelayPacket(new RelayPacketKind.Json(JsonIdentifier.player_id), Encoding.UTF8.GetBytes("not json"));
+
+        Assert.Null(RelayMessageParser.Parse(malformed));
+    }
+
+    [Fact]
+    public void MessageParserRejectsNonJsonPacketKind()
+    {
+        var snapshotChunk = new RelayPacket(new RelayPacketKind.SnapshotChunk(SnapshotFileId.World, 0), []);
+
+        Assert.Null(RelayMessageParser.Parse(snapshotChunk));
+    }
+
+    [Fact]
+    public void PlayerStateDeserializesPlayerIdAndEvents()
+    {
+        var state = JsonSerializer.Deserialize<PlayerState>("{\"player_id\":\"p1\"}");
 
         Assert.NotNull(state);
         Assert.Equal("p1", state.PlayerId);
-        Assert.Equal(12, state.Payload["x"]!.GetValue<int>());
-        Assert.Null(missing);
-        Assert.Null(blank);
+        Assert.Empty(state.Events);
     }
+
+    static RelayPacket MakeJsonPacket(JsonIdentifier identifier, string json) =>
+        new(new RelayPacketKind.Json(identifier), Encoding.UTF8.GetBytes(json));
 }

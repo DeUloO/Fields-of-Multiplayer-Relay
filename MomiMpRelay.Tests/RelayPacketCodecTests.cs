@@ -1,6 +1,4 @@
 using System.Text;
-using System.Text.Json.Nodes;
-using Moq;
 using MomiMpRelay.Models;
 using MomiMpRelay.Networking;
 
@@ -11,15 +9,14 @@ public sealed class RelayPacketCodecTests
     [Fact]
     public void EncodeJsonAndDecodeRoundTripsMessage()
     {
-        var message = new Mock<IRelayMessage>();
-        message.SetupGet(value => value.Identifier).Returns("test");
-        message.Setup(value => value.ToJson()).Returns(new JsonObject { ["value"] = 42 });
+        var message = new PlayerState { PlayerId = "p1" };
 
-        var encoded = RelayPacketCodec.EncodeJson(message.Object);
+        var encoded = RelayPacketCodec.EncodeJson(JsonIdentifier.player_id, message);
 
         Assert.True(RelayPacketCodec.TryDecode(encoded, out var packet));
-        Assert.Equal(RelayPacketKind.Json, packet.Kind);
-        Assert.Equal("{\"value\":42}", Encoding.UTF8.GetString(packet.Data));
+        var kind = Assert.IsType<RelayPacketKind.Json>(packet.Kind);
+        Assert.Equal(JsonIdentifier.player_id, kind.Identifier);
+        Assert.Equal("{\"player_id\":\"p1\",\"evs\":[]}", Encoding.UTF8.GetString(packet.Data));
     }
 
     [Fact]
@@ -30,10 +27,10 @@ public sealed class RelayPacketCodecTests
         var encoded = RelayPacketCodec.EncodeSnapshotChunk(SnapshotFileId.Terrain, 17, source);
 
         Assert.True(RelayPacketCodec.TryDecode(encoded, out var packet));
-        Assert.Equal(RelayPacketKind.SnapshotChunk, packet.Kind);
-        Assert.Equal(2, packet.Data[0]);
-        Assert.Equal(17, BitConverter.ToInt32(packet.Data, 1));
-        Assert.Equal(source, packet.Data[5..]);
+        Assert.True(RelayPacketCodec.TryDecodeSnapshotChunk(packet, out var chunk));
+        Assert.Equal(SnapshotFileId.Terrain, chunk.FileId);
+        Assert.Equal(17, chunk.Sequence);
+        Assert.Equal(source, chunk.Data);
     }
 
     [Theory]
@@ -65,8 +62,8 @@ public sealed class RelayPacketCodecTests
     [Fact]
     public void DecodeSnapshotChunkReturnsTypedMetadata()
     {
-        var packet = new RelayPacket(RelayPacketKind.SnapshotChunk,
-            new byte[] { 2, 17, 0, 0, 0, 7, 8 });
+        var encoded = RelayPacketCodec.EncodeSnapshotChunk(SnapshotFileId.Terrain, 17, new byte[] { 7, 8 });
+        Assert.True(RelayPacketCodec.TryDecode(encoded, out var packet));
 
         Assert.True(RelayPacketCodec.TryDecodeSnapshotChunk(packet, out var chunk));
         Assert.Equal(SnapshotFileId.Terrain, chunk.FileId);
